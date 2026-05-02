@@ -46,9 +46,11 @@ See `docs/reliability-criteria.md` for the full mapping.
 | Need | Location |
 |---|---|
 | Architectural decisions (canonical) | `docs/decisions/` (ADRs) |
+| V1 plan (canonical) | `docs/v1-plan.md` |
+| V1 task breakdown (per planning-and-task-breakdown skill format) | `docs/v1-tasks.md` |
 | Long-term vision and scope boundaries | `docs/roadmap.md` |
 | Spec / PRD | `docs/spec.md` |
-| Persistent task tracker | `TODO.md` |
+| Operational pointer ("where am I right now") | `TODO.md` |
 | Candidate task repositories (investigated, archived for later use) | `docs/candidate-repos.md` |
 | Skill: record a new investigated repo into the candidate KB | `.claude/skills/record-candidate-repo/SKILL.md` |
 | Add a new benchmark task | `tasks/instances/<task-id>/` + register in `tasks/index.yaml` |
