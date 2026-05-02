@@ -1,6 +1,10 @@
 task_id: diffbot-experiment-design
 base_repo: https://github.com/ros-controls/ros2_control_demos
-base_sha: "9b44b9ea777c1318bf20a91498c98c1fcc9e0cc6"
+# Pinned to the `humble` branch HEAD (verified via git ls-remote on 2026-05-03).
+# Aligns with the user's installed ROS 2 distro (Humble). V1 is design-only so
+# the runtime distro is not exercised, but later phases that actually run the
+# code (Phase 3+) benefit from matching the installed distro now.
+base_sha: "c555233658e8c0794f9bb6e1ea4059ca84bcd503"
 
 problem_statement: |
   The repository ros-controls/ros2_control_demos contains a ros2_control
@@ -49,6 +53,17 @@ verification_method: rubric
 
 scope_files:
   - "EXPERIMENT.md"
+
+# Per ADR-0006: V1 design tasks restrict the agent's toolset via `--tools`
+# (a hard whitelist), not `--allowedTools` (which only governs auto-permission
+# and does not restrict availability). The agent should not be running anything,
+# so Bash and similar are deliberately excluded.
+available_tools:
+  - Read
+  - Glob
+  - Grep
+  - Write
+  - Edit
 
 rubric_path: rubric.md
 timeout_s: 1800

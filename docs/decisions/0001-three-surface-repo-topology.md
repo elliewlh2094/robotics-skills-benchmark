@@ -24,7 +24,7 @@ Three logically separate repository surfaces:
 2. **Plugin** (separate, `elliewlh2094/robotics-agent-skills`) — the artifact under iteration; versioned by git tags. Cleanly publishable as a Claude Code plugin from its repo root.
 3. **Task code** (many external repos) — referenced in `tasks/index.yaml` by `(URL, commit_sha)` pairs only. Never vendored, never submoduled. Cloned at experiment time into a scratch worktree, discarded after the run (or retained on failure for inspection).
 
-Reproducibility is keyed on `(plugin_tag, base_sha, schema_version, run_id)` — recorded in every `result.json`.
+Reproducibility is keyed on `(plugin_sha, base_sha, schema_version, run_id)` — recorded in every `result.json`. Note: `plugin_tag` (a human-supplied label) and `plugin_ref` (a branch or tag name passed to the runner) are *also* recorded, but they can drift over time (tags can be moved, branches advance), so `plugin_sha` is the canonical key. The runner resolves the plugin's HEAD SHA at materialization time and pins it in `result.json`, regardless of whether the plugin was sourced via `--plugin-path` or `--plugin-repo + --plugin-ref`.
 
 ## Alternatives Considered
 
@@ -46,7 +46,7 @@ Reproducibility is keyed on `(plugin_tag, base_sha, schema_version, run_id)` —
 ## Consequences
 
 - ✅ Meta-repo stays lightweight even as the task set scales to 50+ external references.
-- ✅ Reproducibility works without depending on the harness storing task code.
+- ✅ Reproducibility works without depending on the harness storing task code. The reproducibility tuple `(plugin_sha, base_sha, schema_version, run_id)` is fully captured in every `result.json`; if the plugin path is not a git working tree, `plugin_sha` is null and a warning is logged.
 - ✅ Plugin can be installed from `elliewlh2094/robotics-agent-skills` without harness machinery.
 - ⚠️ Harness must handle external clones at run time → introduces a network-dependency at execution rather than at commit time.
 - ⚠️ Stale upstream repos fail loudly (SHA fetch fails) — preferable to silent corruption, but requires runtime error handling.

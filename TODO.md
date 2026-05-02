@@ -2,21 +2,19 @@
 
 Persistent task tracker. Read this first to see where we are; pair with `docs/spec.md` (what + why), `docs/decisions/` (architecture decision records), and `~/.claude/plans/i-want-to-conduct-federated-stream.md` (full implementation plan).
 
-> **Last updated:** 2026-05-02 (post-T1.2). **Phase 1 in progress; T1.3 next.**
+> **Last updated:** 2026-05-02 (post-T1.3). **Phase 1 in progress; T1.4 next.**
 
 ---
 
 ## ▶ Where to resume
 
-**T1.3 — implement the experiment runner (`harness/run_experiment.py`).**
+**T1.4 — implement scope-check + rubric scorer.**
 
-All blocking decisions are pinned:
-- CLI invocation surface verified via `claude --help` (see ADR-0006). Use `--plugin-dir`, `--dangerously-skip-permissions`, `--output-format json`, `--no-session-persistence`, `-p`.
-- No `--max-turns` flag exists; wall-clock timeout via `subprocess.Popen(timeout=…)`.
-- Worktrees per ADR-0002.
-- Single auth surface; Max plan covers headless invocations (ADR-0006).
+Two modules:
+- `harness/scope_check.py` — given a diff and `scope_files` glob list, return `{out_of_scope_count, out_of_scope_paths}`. Pure function over text input; cheap to test.
+- `harness/score_rubric.py` — given `(task, agent_output, rubric)`, subprocess `claude -p --output-format json` (no plugin loaded) per ADR-0006. Scores 0–3 per rubric dimension. Runs N=3 trials with different seeds (or with a fresh subprocess each time, since Claude doesn't expose a seed flag — investigate). Returns `{per_trial: [...], mean: {...}, stdev: {...}}`.
 
-V1 task instance (T1.2) is in place and validates: `tasks/instances/diffbot-experiment-design/`.
+After T1.4 the runner should call both scorers and merge their output into `result.json.scoring`. Currently `result.json.scoring` is left as `{}` by the runner.
 
 ---
 
@@ -37,33 +35,19 @@ V1 task instance (T1.2) is in place and validates: `tasks/instances/diffbot-expe
 | — | Candidate-repo knowledge base | `docs/candidate-repos.md` (4 detailed entries + backlog table) |
 | — | `record-candidate-repo` project-level skill | `.claude/skills/record-candidate-repo/SKILL.md` |
 | T1.2 | Write V1 DiffBot task instance | `tasks/instances/diffbot-experiment-design/{task.yaml,rubric.md}`; SHA `9b44b9ea`; 7-dimension rubric; validates clean |
+| T1.3 | Implement experiment runner | `harness/run_experiment.py` + `harness/__init__.py`; partial-result-on-crash semantics; idempotency by `(plugin_tag, task_id, run_id)` triple; worktree path includes the full triple to prevent cross-experiment collisions; supports `--plugin-path` (local) or `--plugin-repo + --plugin-ref` (cached clone); `--max-turns` ceiling; `--tools` from `task.available_tools` (falls back to `--dangerously-skip-permissions` with warning); 27 unit tests pass |
+| — | T1.3 review fixes (round 1) | Worktree path collision, `--max-turns` real per docs, `--allowedTools` introduced, plugin URL+ref materialization mode, pin V1 task to ros2_control_demos `humble` branch. ADR-0006 + ADR-0007 updated |
+| — | T1.3 review fixes (round 2) | `--allowedTools` → `--tools`: docs show `--allowedTools` is auto-permission, not restriction; `--tools` is the hard whitelist. Schema field renamed `allowed_tools` → `available_tools` to align with the docs' "list of available tools" wording and avoid confusion with the `--allowedTools` flag. `plugin_sha` recorded in result.json: branch/tag refs can move; SHA is the canonical reproducibility key. ADR-0001 + ADR-0006 + schema description updated. 27 unit tests pass |
 
 ---
 
 ## 🔄 In flight
 
-None — T1.2 complete; T1.3 ready to start.
+None — T1.3 complete; T1.4 ready to start.
 
 ---
 
 ## ⏳ Pending — Phase 1 (Foundation, target ~4 weeks)
-
-### T1.3 — Implement experiment runner
-- **Blocked by:** T1.1 (✅) — schema-only dependency
-- **Blocking:** T1.4
-- **Files:** `harness/run_experiment.py`, `harness/__init__.py`
-- **Size:** M
-- **Acceptance:**
-  - Input: `(plugin_tag, task_id, run_id)`
-  - Creates worktree at `base_sha` under `/tmp/exp-scratch/<run_id>/`
-  - Materializes the plugin at the requested tag
-  - Invokes `claude -p` per ADR-0006 (`--plugin-dir`, `--dangerously-skip-permissions`, `--output-format json`, `--no-session-persistence`)
-  - Sets env vars: `BENCHMARK_SCOPE_FILES`, optional `BENCHMARK_SEED`
-  - Captures: transcript, final diff, files-modified, runtime, exit code
-  - Idempotent: re-running same triple is rejected, not silently overwritten
-  - Crash partway through → parseable partial `result.json` with `status: "incomplete"`
-  - Worktree cleanup on success, retained on failure
-- **Notes:** No `--max-turns` flag exists; use `subprocess.Popen(timeout=…)` for wall-clock cap.
 
 ### T1.4 — Implement scope-check + rubric scorer
 - **Blocked by:** T1.3

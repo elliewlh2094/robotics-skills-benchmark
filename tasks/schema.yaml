@@ -106,6 +106,22 @@ properties:
       it in result.json. Recommended for sim-metric tasks where physics nondeterminism
       contaminates scoring.
 
+  available_tools:
+    type: array
+    minItems: 1
+    items:
+      type: string
+    description: |
+      Optional whitelist of Claude Code tool names the agent may invoke during this task.
+      When present, the runner translates this to `--tools <comma-separated>` (the hard
+      whitelist flag — NOT `--allowedTools`, which only governs auto-permission and does
+      not restrict tool availability). The field name `available_tools` mirrors the docs
+      wording "list of available tools from the built-in set" so reading the schema and
+      reading `claude --help` agree. For V1 design tasks the recommended list is
+      ["Read", "Glob", "Grep", "Write", "Edit"]. Bash should generally be omitted unless
+      the task explicitly requires the agent to run something. When absent, the runner
+      falls back to `--dangerously-skip-permissions` and logs a warning.
+
   description:
     type: string
     description: Free-form human-readable notes about the task. Not shown to the agent.

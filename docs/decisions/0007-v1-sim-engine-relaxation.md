@@ -29,6 +29,7 @@ For V1 only, the task-repo selection criterion is relaxed to:
 
 V1 task instance:
 - `base_repo`: `https://github.com/ros-controls/ros2_control_demos`
+- `base_sha`: `c555233658e8c0794f9bb6e1ea4059ca84bcd503` (HEAD of the **`humble`** branch as of 2026-05-03). The repo maintains per-distro branches; pinning to `humble` aligns with the user's installed ROS 2 distro. V1 is design-only so the runtime distro is not exercised, but later phases that actually run the code (Phase 3+) inherit this alignment.
 - focus: `example_2` (DiffBot — `example_2/hardware/diffbot_system.cpp`)
 - `sim_engine`: `none` (per the existing schema enum; the repo uses ros2_control mock hardware, no sim engine)
 
