@@ -2,28 +2,21 @@
 
 Persistent task tracker. Read this first to see where we are; pair with `docs/spec.md` (what + why), `docs/decisions/` (architecture decision records), and `~/.claude/plans/i-want-to-conduct-federated-stream.md` (full implementation plan).
 
-> **Last updated:** 2026-05-02 (post-ADR session). **Phase 1 in progress; T1.2 next.**
+> **Last updated:** 2026-05-02 (post-T1.2). **Phase 1 in progress; T1.3 next.**
 
 ---
 
 ## ▶ Where to resume
 
-**T1.2 — write the V1 DiffBot task instance.**
+**T1.3 — implement the experiment runner (`harness/run_experiment.py`).**
 
-Decision recorded in [ADR-0007](docs/decisions/0007-v1-sim-engine-relaxation.md):
-- Repo: `https://github.com/ros-controls/ros2_control_demos`
-- Focus: `example_2` (DiffBot)
-- `sim_engine`: `none` (mock hardware via ros2_control)
-- Rubric-typed; agent designs an `EXPERIMENT.md` for validating the kinematic integration invariant
+All blocking decisions are pinned:
+- CLI invocation surface verified via `claude --help` (see ADR-0006). Use `--plugin-dir`, `--dangerously-skip-permissions`, `--output-format json`, `--no-session-persistence`, `-p`.
+- No `--max-turns` flag exists; wall-clock timeout via `subprocess.Popen(timeout=…)`.
+- Worktrees per ADR-0002.
+- Single auth surface; Max plan covers headless invocations (ADR-0006).
 
-What's left in T1.2:
-- Confirm a 40-char SHA on `master` (or whichever the default branch is)
-- Author `tasks/instances/diffbot-experiment-design/task.yaml`
-- Author `tasks/instances/diffbot-experiment-design/rubric.md` (5–7 dimensions, 0–3 each)
-- Register in `tasks/index.yaml`
-- Validate with `python harness/validate_task.py --all`
-
-After T1.2, T1.3 (experiment runner) is unblocked; CLI invocation surface is already verified.
+V1 task instance (T1.2) is in place and validates: `tasks/instances/diffbot-experiment-design/`.
 
 ---
 
@@ -43,28 +36,17 @@ After T1.2, T1.3 (experiment runner) is unblocked; CLI invocation surface is alr
 | — | V1 task repo selection | DiffBot in `ros2_control_demos`; see ADR-0007 |
 | — | Candidate-repo knowledge base | `docs/candidate-repos.md` (4 detailed entries + backlog table) |
 | — | `record-candidate-repo` project-level skill | `.claude/skills/record-candidate-repo/SKILL.md` |
+| T1.2 | Write V1 DiffBot task instance | `tasks/instances/diffbot-experiment-design/{task.yaml,rubric.md}`; SHA `9b44b9ea`; 7-dimension rubric; validates clean |
 
 ---
 
 ## 🔄 In flight
 
-- **T1.2** — write the DiffBot task instance (see "Where to resume" above)
+None — T1.2 complete; T1.3 ready to start.
 
 ---
 
 ## ⏳ Pending — Phase 1 (Foundation, target ~4 weeks)
-
-### T1.2 — Write V1 DiffBot task instance
-- **Blocked by:** T1.1 (✅)
-- **Blocking:** T1.3 (logically; runner can be built against sample fixture in parallel)
-- **Files:** `tasks/index.yaml`, `tasks/instances/diffbot-experiment-design/{task.yaml,rubric.md}`
-- **Size:** S
-- **Acceptance:**
-  - 40-char SHA on `ros2_control_demos` recorded
-  - `task.yaml` validates: `python harness/validate_task.py tasks/instances/diffbot-experiment-design/task.yaml`
-  - Rubric has 5–7 dimensions, each with 0–3 scoring guidance (suggested: hypothesis, controlled variables, recorded signals, success thresholds, visualization plan, failure modes; possibly: integration scheme awareness)
-  - Registered in `tasks/index.yaml`
-  - `scope_files` set narrowly (e.g., `EXPERIMENT.md` only) so scope-discipline metric is meaningful
 
 ### T1.3 — Implement experiment runner
 - **Blocked by:** T1.1 (✅) — schema-only dependency

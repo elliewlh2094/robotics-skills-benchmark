@@ -1,0 +1,69 @@
+task_id: diffbot-experiment-design
+base_repo: https://github.com/ros-controls/ros2_control_demos
+base_sha: "9b44b9ea777c1318bf20a91498c98c1fcc9e0cc6"
+
+problem_statement: |
+  The repository ros-controls/ros2_control_demos contains a ros2_control
+  demonstration of a differential-drive mobile robot ("DiffBot") under
+  example_2/. The hardware interface at example_2/hardware/diffbot_system.cpp
+  simulates wheel kinematics by integrating commanded velocities into joint
+  positions on each control cycle.
+
+  We hypothesize that DiffBot's hardware interface implements first-order
+  Euler integration: for a constant commanded velocity v held over time T,
+  the measured joint position should change by approximately v·T, with
+  quantization error bounded by the controller update period Δt.
+
+  Write an experiment plan to EXPERIMENT.md at the repository root that
+  would validate or refute this hypothesis when DiffBot is brought up using
+  the launch files in example_2/. (example_2 uses ros2_control's
+  mock-hardware interface — controller_manager + ros2_control_node — so no
+  separate sim engine is required.) Your plan must include:
+
+    - A clearly stated, falsifiable hypothesis (with the quantitative form of
+      the expected relationship and its expected error bound)
+    - Independent variables with concrete levels, and confounds to hold
+      constant
+    - Specific ROS 2 topics to record, with sample rates and rationale
+    - Quantitative success thresholds tied to the hypothesis (with units)
+    - A visualization plan describing how results will be plotted and what
+      will be inspected
+    - At least three concrete failure modes the experiment could encounter,
+      each with a specific mitigation
+
+  Read example_2/hardware/diffbot_system.cpp and any relevant URDF or launch
+  files to ground your plan in this repository's actual structure. Generic
+  experimental checklists that could apply to any robot will be scored
+  lower than plans that reference specific code constructs from this repo.
+
+  Constraints:
+    - Do NOT execute anything. You are designing the experiment, not
+      running it.
+    - Do NOT modify the source code. Produce only EXPERIMENT.md.
+    - The plan should be self-contained: a colleague reading EXPERIMENT.md
+      should be able to set up and run the experiment without consulting
+      you.
+
+solution_type: design
+verification_method: rubric
+
+scope_files:
+  - "EXPERIMENT.md"
+
+rubric_path: rubric.md
+timeout_s: 1800
+
+sim_engine: none
+seed_required: false
+
+description: |
+  V1 baseline task. Tests the agent's ability to design a rigorous robotics
+  experiment plan grounded in the actual repository structure and runtime.
+
+  Per ADR-0007, V1's sim_engine criterion is relaxed: example_2 uses
+  ros2_control's mock-hardware interface (controller_manager +
+  ros2_control_node), so no separate sim engine is required. The agent's
+  plan should target *that* runtime — the one the repo actually ships —
+  not an imagined Gazebo setup. A grade-3 plan grounds its setup steps in
+  example_2/'s launch files and references the actual hardware-interface
+  code constructs (see rubric dimension 7).

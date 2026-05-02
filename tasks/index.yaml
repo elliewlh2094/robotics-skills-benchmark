@@ -1,4 +1,19 @@
 schema_version: 1
 schema_path: schema.yaml
 
-tasks: []
+tasks:
+  - id: diffbot-experiment-design
+    path: instances/diffbot-experiment-design/
+    summary: Design a ROS 2 experiment validating DiffBot kinematic integration
+    solution_type: design
+    verification_method: rubric
+    sim_engine: none
+    status: active
+    introduced_in: v1
+    notes: |
+      V1 baseline task. Per ADR-0007, sim_engine is `none` — example_2 uses
+      ros2_control's mock-hardware interface (controller_manager +
+      ros2_control_node); no separate sim engine is required. The agent
+      designs an experiment for that runtime, not for Gazebo. Running
+      the experiment is out of V1 scope (V1 grades plan quality, not
+      execution).

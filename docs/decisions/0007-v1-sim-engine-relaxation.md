@@ -61,7 +61,7 @@ This is a **V1 scope exception**, not a strategy change. ADR-0007 supersedes onl
 ## Consequences
 
 - ✅ V1 task selection optimizes for rubric grading quality rather than sim-engine compliance.
-- ✅ V1 grades the agent's *plan quality*, including its ability to articulate a Gazebo-targeting plan against a repo that uses mock hardware (a probe of the agent's architectural reasoning, not a weakness).
+- ✅ V1 grades the agent's *plan quality* — hypothesis sharpness, controlled variables, signal selection, threshold derivation, visualization, failure-mode awareness, repo grounding — against the runtime this repo actually ships (`controller_manager` + `ros2_control_node` + mock-hardware interface). The agent designs an experiment for the system as it exists; the rubric does not require, and grade-3 does not depend on, bridging to Gazebo.
 - ✅ V1 task can be authored against a fresh `ros2_control_demos` HEAD (yesterday's commit at time of writing).
 - ⚠️ Phase 3+ task selection must explicitly reinstate the Gazebo criterion. This exception **does not propagate**.
 - ⚠️ Anyone reading the original plan will see the "all V1/V2 tasks must run on Gazebo" wording; this ADR is the canonical correction. The plan file itself is a frozen approved-plan artifact and is not being mutated; ADRs supersede.
