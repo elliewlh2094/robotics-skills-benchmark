@@ -1,0 +1,9 @@
+data_for_presentation/
+
+# Claude Code per-user permissions — machine-local, do not commit
+.claude/settings.local.json
+
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo

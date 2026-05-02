@@ -1,0 +1,123 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://github.com/elliewlh2094/robotics-skills-benchmark/blob/main/tasks/schema.yaml"
+title: "Robotics Skills Benchmark Task Instance"
+description: |
+  One task instance defines a single benchmark problem: a base repo at a pinned commit,
+  a problem statement given to the agent, an allowed write-scope, and how the result is
+  scored. Inspired by SWE-bench's instance schema, extended with verification_method and
+  scope_files to support non-test-pass tasks.
+
+type: object
+additionalProperties: false
+
+required:
+  - task_id
+  - base_repo
+  - base_sha
+  - problem_statement
+  - solution_type
+  - verification_method
+  - scope_files
+  - timeout_s
+
+properties:
+  task_id:
+    type: string
+    pattern: "^[a-z0-9][a-z0-9-]*[a-z0-9]$"
+    description: |
+      Kebab-case unique identifier. Must match the folder name under tasks/instances/.
+
+  base_repo:
+    type: string
+    format: uri
+    pattern: "^https://github.com/[^/]+/[^/]+(\\.git)?$"
+    description: HTTPS GitHub URL of the source repo to clone.
+
+  base_sha:
+    type: string
+    pattern: "^[a-f0-9]{40}$"
+    description: Full 40-character commit SHA. Branch names are NOT allowed — pin to a SHA for reproducibility.
+
+  problem_statement:
+    type: string
+    minLength: 20
+    description: |
+      The prompt given to the agent. Should describe the goal, constraints, and where the
+      agent's output should land (e.g., "Write your experiment plan to EXPERIMENT.md").
+
+  solution_type:
+    type: string
+    enum: [bugfix, spec, design, perf, refactor]
+    description: |
+      What kind of work the agent is being asked to do. Affects which scorers run and
+      what rubric dimensions apply.
+
+  verification_method:
+    type: string
+    enum: [unit-test, sim-metric, rubric, hybrid]
+    description: |
+      How the result is scored.
+      - unit-test: SWE-bench-style FAIL_TO_PASS + PASS_TO_PASS via verify_script
+      - sim-metric: run a sim, parse a metric from rosbag/log
+      - rubric: LLM-judge against rubric_path
+      - hybrid: both rubric and one of the others; result.json carries both scores
+
+  scope_files:
+    type: array
+    minItems: 1
+    items:
+      type: string
+    description: |
+      Glob patterns (relative to the task repo root) listing the files the agent is
+      ALLOWED to create or modify. Anything outside this list counts toward
+      out_of_scope_file_count and is enforced by the pre-commit-scope-check hook.
+
+  rubric_path:
+    type: string
+    description: |
+      Path to rubric.md, relative to this task instance directory.
+      Required when verification_method is "rubric" or "hybrid".
+
+  verify_script:
+    type: string
+    description: |
+      Path to verify.sh, relative to this task instance directory.
+      Required when verification_method is "unit-test", "sim-metric", or "hybrid".
+
+  timeout_s:
+    type: integer
+    minimum: 60
+    maximum: 14400
+    description: |
+      Hard cap on agent execution time in seconds. Default for rubric tasks: 1800 (30 min).
+      Sim-metric tasks may legitimately need more.
+
+  sim_engine:
+    type: string
+    enum: [gazebo, isaac, mujoco, none]
+    default: none
+    description: Which simulator the task expects, if any.
+
+  seed_required:
+    type: boolean
+    default: false
+    description: |
+      If true, harness sets a fixed random seed (env var BENCHMARK_SEED) and reports
+      it in result.json. Recommended for sim-metric tasks where physics nondeterminism
+      contaminates scoring.
+
+  description:
+    type: string
+    description: Free-form human-readable notes about the task. Not shown to the agent.
+
+allOf:
+  - if:
+      properties:
+        verification_method: { enum: [rubric, hybrid] }
+    then:
+      required: [rubric_path]
+  - if:
+      properties:
+        verification_method: { enum: [unit-test, sim-metric, hybrid] }
+    then:
+      required: [verify_script]

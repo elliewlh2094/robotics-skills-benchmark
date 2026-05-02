@@ -1,0 +1,17 @@
+task_id: sample
+base_repo: https://github.com/ros/ros_tutorials
+base_sha: "0000000000000000000000000000000000000000"
+problem_statement: |
+  This is a sample task instance used to validate the schema. It does not point to a real
+  base_sha (the all-zero SHA above is a placeholder). Do not run this task against an agent —
+  it exists only as a fixture for `python -m jsonschema -i task.yaml ../../schema.yaml`.
+solution_type: design
+verification_method: rubric
+scope_files:
+  - "EXPERIMENT.md"
+  - "experiments/**/*.md"
+rubric_path: rubric.md
+timeout_s: 1800
+sim_engine: gazebo
+seed_required: false
+description: Sample fixture for schema validation. Replace with real base_sha before use.
