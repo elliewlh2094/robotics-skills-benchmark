@@ -22,6 +22,7 @@ Output artifacts under experiments/<YYYY-MM-DD>_<tag>_<task>_<run>/:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -30,8 +31,18 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import yaml
+
+# Allow invocation as `python3 harness/run_experiment.py` (script mode), not
+# just `python3 -m harness.run_experiment`. When run as a script the package
+# parent isn't on sys.path; pytest already handles the module case.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from harness.scope_check import compute_scope_violations  # noqa: E402
+from harness.score_rubric import JudgeInvocationError, score_rubric  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TASKS_DIR = REPO_ROOT / "tasks"
@@ -427,6 +438,76 @@ def render_transcript(stdout: str, stderr: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Scoring (T1.4): scope-discipline + LLM-judge rubric
+# ---------------------------------------------------------------------------
+
+def gather_deliverable(
+    worktree: Path, files_modified: list[str], scope_files: list[str]
+) -> str:
+    """Concatenate the in-scope files the agent actually produced, for the judge.
+
+    Only files that BOTH appear in `files_modified` AND match a `scope_files`
+    pattern are included. If nothing in scope was produced, return a marker so
+    the judge can score 0 with an "empty deliverable" rationale.
+    """
+    in_scope = [
+        f for f in files_modified
+        if any(fnmatch.fnmatchcase(f, pat) for pat in scope_files)
+    ]
+    if not in_scope:
+        return "[no in-scope files were produced by the agent]"
+    parts: list[str] = []
+    for f in sorted(in_scope):
+        path = worktree / f
+        if path.is_file():
+            parts.append(f"=== {f} ===\n{path.read_text()}\n")
+        else:
+            # File was modified per the diff but is gone (deleted, or path
+            # outside worktree). Surface the gap rather than silently skipping.
+            parts.append(f"=== {f} ===\n[file not readable from worktree]\n")
+    return "\n".join(parts)
+
+
+def compute_scoring(
+    task: dict,
+    diff_text: str,
+    deliverable_text: str,
+    *,
+    n_trials: int = 3,
+    judge_runner: Callable[[str], dict] | None = None,
+) -> dict:
+    """Build the `scoring` section of result.json. Always runs scope_check;
+    runs the rubric judge when the task declares one.
+
+    Judge failures are caught and recorded in `scoring.rubric.error` rather
+    than raised — a noisy judge shouldn't lose the rest of the experiment's
+    forensics.
+    """
+    scoring: dict = {
+        "scope_check": compute_scope_violations(diff_text, task["scope_files"]),
+    }
+
+    method = task.get("verification_method")
+    rubric_path = task.get("rubric_path")
+    if method in ("rubric", "hybrid") and rubric_path:
+        full_rubric_path = task["_task_dir"] / rubric_path
+        try:
+            rubric_text = full_rubric_path.read_text()
+            scoring["rubric"] = score_rubric(
+                rubric_text,
+                deliverable_text,
+                n_trials=n_trials,
+                judge_runner=judge_runner,
+            )
+        except (JudgeInvocationError, FileNotFoundError, OSError) as e:
+            scoring["rubric"] = {
+                "error": {"type": type(e).__name__, "message": str(e)}
+            }
+
+    return scoring
+
+
+# ---------------------------------------------------------------------------
 # Result writer
 # ---------------------------------------------------------------------------
 
@@ -580,11 +661,17 @@ def run(
         diff_text, files_modified = capture_diff(task_worktree, base_sha)
         final_result["files_modified"] = files_modified
 
-        # 8. Write artifacts
+        # 8. Score: scope-discipline + rubric judge (T1.4). Judge failures are
+        #    captured into scoring.rubric.error so we still have transcript +
+        #    diff + scope-check on disk for debugging.
+        deliverable_text = gather_deliverable(task_worktree, files_modified, scope_files)
+        final_result["scoring"] = compute_scoring(task, diff_text, deliverable_text)
+
+        # 9. Write artifacts
         (exp_dir / "diff.patch").write_text(diff_text)
         (exp_dir / "transcript.md").write_text(render_transcript(agent["stdout"], agent["stderr"]))
 
-        # 9. Persist final result
+        # 10. Persist final result
         write_result(exp_dir, final_result)
 
         success_for_cleanup = (final_result["status"] == "success")
@@ -600,7 +687,7 @@ def run(
         write_result(exp_dir, final_result)
         raise
     finally:
-        # 10. Cleanup per ADR-0002: prune worktree on success, retain on failure.
+        # 11. Cleanup per ADR-0002: prune worktree on success, retain on failure.
         if success_for_cleanup:
             remove_worktree(cache, task_worktree)
         else:

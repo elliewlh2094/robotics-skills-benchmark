@@ -14,8 +14,10 @@ import subprocess
 from harness.run_experiment import (
     cache_dir_for_repo,
     check_plugin_path,
+    compute_scoring,
     experiment_dir_name,
     find_existing_experiment,
+    gather_deliverable,
     render_transcript,
     resolve_git_sha,
     safe_path_component,
@@ -228,3 +230,120 @@ def test_resolve_git_sha_returns_none_for_non_git_dir(tmp_path):
 
 def test_resolve_git_sha_returns_none_for_missing_dir(tmp_path):
     assert resolve_git_sha(tmp_path / "does-not-exist") is None
+
+
+# ---------------------------------------------------------------------------
+# gather_deliverable (T1.4 integration)
+# ---------------------------------------------------------------------------
+
+def test_gather_deliverable_includes_only_in_scope_files(tmp_path):
+    (tmp_path / "EXPERIMENT.md").write_text("hypothesis: foo\n")
+    (tmp_path / "notes.txt").write_text("scratch notes\n")  # out of scope
+    deliverable = gather_deliverable(
+        tmp_path,
+        files_modified=["EXPERIMENT.md", "notes.txt"],
+        scope_files=["EXPERIMENT.md"],
+    )
+    assert "hypothesis: foo" in deliverable
+    assert "scratch notes" not in deliverable
+    assert "=== EXPERIMENT.md ===" in deliverable
+
+
+def test_gather_deliverable_marks_empty_when_nothing_in_scope(tmp_path):
+    deliverable = gather_deliverable(
+        tmp_path,
+        files_modified=["src/main.py", "README.md"],
+        scope_files=["EXPERIMENT.md"],
+    )
+    assert "no in-scope files" in deliverable.lower()
+
+
+def test_gather_deliverable_handles_glob_pattern(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "a.md").write_text("a body\n")
+    (tmp_path / "docs" / "b.md").write_text("b body\n")
+    deliverable = gather_deliverable(
+        tmp_path,
+        files_modified=["docs/a.md", "docs/b.md", "src/x.py"],
+        scope_files=["docs/*"],
+    )
+    assert "a body" in deliverable
+    assert "b body" in deliverable
+    assert "=== src/x.py ===" not in deliverable
+
+
+# ---------------------------------------------------------------------------
+# compute_scoring (T1.4 integration)
+# ---------------------------------------------------------------------------
+
+_BASIC_DIFF = (
+    "diff --git a/EXPERIMENT.md b/EXPERIMENT.md\n"
+    "new file mode 100644\n"
+    "--- /dev/null\n"
+    "+++ b/EXPERIMENT.md\n"
+    "@@ -0,0 +1,1 @@\n"
+    "+hello\n"
+)
+
+
+def test_compute_scoring_runs_scope_check_only_when_no_rubric():
+    task = {
+        "scope_files": ["EXPERIMENT.md"],
+        "verification_method": "automated",
+        # No rubric_path — judge should NOT be called.
+        "_task_dir": Path("/nonexistent"),
+    }
+    scoring = compute_scoring(task, _BASIC_DIFF, "deliverable", judge_runner=lambda _: 1 / 0)
+    assert scoring["scope_check"] == {"out_of_scope_count": 0, "out_of_scope_paths": []}
+    assert "rubric" not in scoring
+
+
+def test_compute_scoring_invokes_judge_for_rubric_method(tmp_path):
+    rubric_path = tmp_path / "rubric.md"
+    rubric_path.write_text("rubric body")
+    task = {
+        "scope_files": ["EXPERIMENT.md"],
+        "verification_method": "rubric",
+        "rubric_path": "rubric.md",
+        "_task_dir": tmp_path,
+    }
+    fake_judge = lambda _: {"scores": {"hypothesis": 2}, "overall": 2.0, "rationale": "ok"}
+    scoring = compute_scoring(task, _BASIC_DIFF, "deliverable", n_trials=3, judge_runner=fake_judge)
+
+    assert scoring["scope_check"]["out_of_scope_count"] == 0
+    assert scoring["rubric"]["mean"] == {"hypothesis": 2.0}
+    assert scoring["rubric"]["overall_mean"] == 2.0
+    assert scoring["rubric"]["n_trials"] == 3
+
+
+def test_compute_scoring_records_judge_failure_without_raising(tmp_path):
+    rubric_path = tmp_path / "rubric.md"
+    rubric_path.write_text("rubric body")
+    task = {
+        "scope_files": ["EXPERIMENT.md"],
+        "verification_method": "rubric",
+        "rubric_path": "rubric.md",
+        "_task_dir": tmp_path,
+    }
+
+    def broken_judge(_prompt: str) -> dict:
+        from harness.score_rubric import JudgeInvocationError as _E
+        raise _E("simulated judge failure")
+
+    scoring = compute_scoring(task, _BASIC_DIFF, "deliverable", n_trials=1, judge_runner=broken_judge)
+    # scope-check still ran — losing the judge shouldn't lose the rest.
+    assert scoring["scope_check"] == {"out_of_scope_count": 0, "out_of_scope_paths": []}
+    assert "error" in scoring["rubric"]
+    assert "simulated judge failure" in scoring["rubric"]["error"]["message"]
+
+
+def test_compute_scoring_records_missing_rubric_file(tmp_path):
+    task = {
+        "scope_files": ["EXPERIMENT.md"],
+        "verification_method": "rubric",
+        "rubric_path": "missing.md",
+        "_task_dir": tmp_path,
+    }
+    scoring = compute_scoring(task, _BASIC_DIFF, "deliverable")
+    assert "error" in scoring["rubric"]
+    assert scoring["rubric"]["error"]["type"] == "FileNotFoundError"
