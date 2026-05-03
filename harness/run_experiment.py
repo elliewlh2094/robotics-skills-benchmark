@@ -43,6 +43,7 @@ if __package__ in (None, ""):
 
 from harness.scope_check import compute_scope_violations  # noqa: E402
 from harness.score_rubric import JudgeInvocationError, score_rubric  # noqa: E402
+from harness.validate_result import iter_errors as _result_iter_errors  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TASKS_DIR = REPO_ROOT / "tasks"
@@ -511,8 +512,30 @@ def compute_scoring(
 # Result writer
 # ---------------------------------------------------------------------------
 
+class ResultSchemaError(RuntimeError):
+    """Raised when a result dict fails the canonical schema. The offending
+    payload is preserved on disk at <experiment_dir>/result.invalid.json so
+    the failure is debuggable from the filesystem alone."""
+
+
 def write_result(experiment_dir: Path, result: dict) -> None:
+    """Atomically persist `result` to <experiment_dir>/result.json.
+
+    Validates against harness/schemas/result.schema.yaml first (per ADR-0008).
+    On schema failure: writes the rejected payload to result.invalid.json (so
+    the runner can crash without losing forensics) and raises ResultSchemaError
+    with the joined error messages.
+    """
     experiment_dir.mkdir(parents=True, exist_ok=True)
+    errors = _result_iter_errors(result)
+    if errors:
+        invalid = experiment_dir / "result.invalid.json"
+        with invalid.open("w") as f:
+            json.dump(result, f, indent=2, sort_keys=True)
+        raise ResultSchemaError(
+            f"result.json failed schema validation; rejected payload at {invalid}. "
+            f"Errors: {'; '.join(errors)}"
+        )
     result_path = experiment_dir / "result.json"
     tmp = result_path.with_suffix(".json.tmp")
     with tmp.open("w") as f:
