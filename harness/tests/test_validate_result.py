@@ -1,345 +1,341 @@
-"""Unit tests for harness.validate_result.
+"""Schema tests for harness/schemas/result.schema.yaml.
 
-Covers the canonical schema at harness/schemas/result.schema.yaml. The fixture
-factories build minimal-but-valid result dicts; each negative test mutates one
-field so the failure message points at exactly the rule under test.
+Each test builds a result dict in-memory and runs it through validate_result().
+Positive tests expect no error; negative tests assert that a specific kind of
+malformed result is rejected. Tests use copy-and-mutate patterns over
+helpers (DAMP over DRY in tests — see TDD skill).
 """
 from __future__ import annotations
 
 import copy
 
 import pytest
-from jsonschema import ValidationError
 
-from harness.validate_result import iter_errors, validate
+from harness.validate_result import ResultValidationError, validate_result
 
 
 # ---------------------------------------------------------------------------
-# Fixture factories
+# Reusable building blocks
 # ---------------------------------------------------------------------------
 
-def _identification() -> dict:
-    """Fields required regardless of status."""
-    return {
+# A 40-char hex sha for the SHA-shaped fields.
+_SHA = "0" * 40
+_SHA2 = "a" * 40
+
+
+def _base_partial(**overrides) -> dict:
+    """Minimal valid status='incomplete' partial-write."""
+    base = {
         "schema_version": 1,
         "experiment_id": "2026-05-03_v0.1.0_diffbot-experiment-design_baseline-1",
         "plugin_tag": "v0.1.0",
-        "plugin_path": "/home/u/.cache/robotics-skills-benchmark/plugins/foo__bar/_worktrees/v0.1.0",
-        "plugin_repo": "https://github.com/foo/bar",
-        "plugin_ref": "v0.1.0",
-        "plugin_sha": "0123456789abcdef0123456789abcdef01234567",
+        "plugin_path": "/home/u/.cache/plugins/foo/bar",
+        "plugin_repo": None,
+        "plugin_ref": None,
+        "plugin_sha": _SHA,
         "task_id": "diffbot-experiment-design",
         "run_id": "baseline-1",
         "base_repo": "https://github.com/ros-controls/ros2_control_demos",
-        "base_sha": "c555233658e8c0794f9bb6e1ea4059ca84bcd503",
+        "base_sha": _SHA2,
         "scope_files_declared": ["EXPERIMENT.md"],
         "available_tools": ["Read", "Glob", "Grep", "Write", "Edit"],
         "max_turns": 50,
         "seed": None,
+        "status": "incomplete",
         "started_at": "2026-05-03T12:00:00Z",
-    }
-
-
-def _partial() -> dict:
-    """status=incomplete: the partial-result preamble. Loose constraints."""
-    base = _identification()
-    base.update({
         "completed_at": None,
         "runtime_s": None,
         "exit_code": None,
-        "status": "incomplete",
         "error": None,
         "files_modified": [],
         "transcript_bytes": 0,
         "scoring": {},
-    })
+        "hook_blocks": 0,
+        "judge_calls": 0,
+        "scratch_dir": "/tmp/exp-scratch/v0.1.0__diffbot-experiment-design__baseline-1",
+    }
+    base.update(overrides)
     return base
 
 
-def _success() -> dict:
-    """status=success: agent ran cleanly."""
-    base = _identification()
-    base.update({
-        "completed_at": "2026-05-03T12:30:00Z",
-        "runtime_s": 1800.5,
-        "exit_code": 0,
+def _base_success(**overrides) -> dict:
+    """Minimal valid status='success' final result. No scratch_dir."""
+    partial = _base_partial()
+    partial.pop("scratch_dir")
+    partial.update({
         "status": "success",
-        "error": None,
+        "completed_at": "2026-05-03T12:30:00Z",
+        "runtime_s": 1800.0,
+        "exit_code": 0,
         "files_modified": ["EXPERIMENT.md"],
-        "transcript_bytes": 12345,
+        "transcript_bytes": 4321,
+        "judge_calls": 3,
         "scoring": {
-            "scope_check": {"out_of_scope_count": 0, "out_of_scope_paths": []},
-            "rubric": {
+            "scope_check": {
+                "out_of_scope_file_count": 0,
+                "out_of_scope_paths": [],
+            },
+            "rubric_scores": {
                 "n_trials": 3,
                 "per_trial": [
                     {
                         "scores": {"hypothesis": 2, "signals": 3},
                         "overall_recomputed": 2.5,
                         "overall_judge_reported": 2.5,
-                        "rationale": "specific feedback",
+                        "rationale": "decent plan",
                     },
                     {
-                        "scores": {"hypothesis": 2, "signals": 2},
-                        "overall_recomputed": 2.0,
-                        "overall_judge_reported": 2.0,
-                        "rationale": "another rationale",
+                        "scores": {"hypothesis": 2, "signals": 3},
+                        "overall_recomputed": 2.5,
+                        "overall_judge_reported": 2.5,
+                        "rationale": "decent plan",
                     },
                     {
-                        "scores": {"hypothesis": 3, "signals": 3},
-                        "overall_recomputed": 3.0,
-                        "overall_judge_reported": 3.0,
-                        "rationale": "a third rationale",
+                        "scores": {"hypothesis": 2, "signals": 3},
+                        "overall_recomputed": 2.5,
+                        "overall_judge_reported": 2.5,
+                        "rationale": "decent plan",
                     },
                 ],
-                "mean": {"hypothesis": 2.33, "signals": 2.67},
-                "stdev": {"hypothesis": 0.58, "signals": 0.58},
+                "mean": {"hypothesis": 2.0, "signals": 3.0},
+                "stdev": {"hypothesis": 0.0, "signals": 0.0},
                 "overall_mean": 2.5,
-                "overall_stdev": 0.5,
+                "overall_stdev": 0.0,
             },
         },
     })
-    return base
+    partial.update(overrides)
+    return partial
 
 
-def _error() -> dict:
-    base = _identification()
-    base.update({
+# ---------------------------------------------------------------------------
+# Positive cases — all four lifecycle states
+# ---------------------------------------------------------------------------
+
+def test_partial_incomplete_validates():
+    validate_result(_base_partial())
+
+
+def test_full_success_validates():
+    validate_result(_base_success())
+
+
+def test_agent_error_validates():
+    err = _base_partial()
+    err.update({
+        "status": "error",
         "completed_at": "2026-05-03T12:05:00Z",
         "runtime_s": 300.0,
         "exit_code": 1,
-        "status": "error",
         "error": {"type": "non-zero-exit", "message": "claude exited with code 1"},
-        "files_modified": [],
-        "transcript_bytes": 200,
-        "scoring": {"scope_check": {"out_of_scope_count": 0, "out_of_scope_paths": []}},
-        "scratch_dir": "/tmp/exp-scratch/v0.1.0__diffbot__baseline-1",
+        "scoring": {
+            "scope_check": {"out_of_scope_file_count": 0, "out_of_scope_paths": []},
+        },
     })
-    return base
+    # scratch_dir already in _base_partial — required for status=error
+    validate_result(err)
 
 
-def _timeout() -> dict:
-    base = _error()
-    base["status"] = "timeout"
-    base["error"] = {"type": "timeout", "message": "exceeded timeout_s=1800"}
-    base["exit_code"] = -1
-    return base
-
-
-# ---------------------------------------------------------------------------
-# Happy paths — every status produces a valid result
-# ---------------------------------------------------------------------------
-
-def test_partial_is_valid():
-    validate(_partial())
-
-
-def test_success_is_valid():
-    validate(_success())
-
-
-def test_error_is_valid():
-    validate(_error())
-
-
-def test_timeout_is_valid():
-    validate(_timeout())
-
-
-def test_success_without_rubric_is_valid():
-    """Tasks with verification_method=automated produce no rubric subtree."""
-    r = _success()
-    del r["scoring"]["rubric"]
-    validate(r)
-
-
-def test_error_with_rubric_failure_subtree_is_valid():
-    """When the judge subprocess fails, scoring.rubric records the error."""
-    r = _success()
-    r["scoring"]["rubric"] = {
-        "error": {"type": "JudgeInvocationError", "message": "claude judge timed out"}
-    }
-    validate(r)
-
-
-def test_plugin_path_mode_with_null_repo_and_ref_is_valid():
-    """When sourced via --plugin-path, plugin_repo and plugin_ref are null."""
-    r = _success()
-    r["plugin_repo"] = None
-    r["plugin_ref"] = None
-    validate(r)
-
-
-def test_plugin_sha_null_is_valid_when_path_not_a_git_worktree():
-    r = _success()
-    r["plugin_sha"] = None
-    validate(r)
+def test_timeout_validates():
+    t = _base_partial()
+    t.update({
+        "status": "timeout",
+        "completed_at": "2026-05-03T12:30:00Z",
+        "runtime_s": 1800.0,
+        "exit_code": -1,
+        "error": {"type": "timeout", "message": "exceeded timeout_s=1800"},
+        "scoring": {"scope_check": {"out_of_scope_file_count": 0, "out_of_scope_paths": []}},
+    })
+    validate_result(t)
 
 
 # ---------------------------------------------------------------------------
-# Negative cases — required fields
+# Plugin sourcing oneOf — refinement B (distinguish by VALUE not key presence)
 # ---------------------------------------------------------------------------
 
-def test_missing_schema_version_rejected():
-    r = _success()
-    del r["schema_version"]
-    with pytest.raises(ValidationError, match="schema_version"):
-        validate(r)
+def test_local_plugin_mode_validates():
+    """plugin_repo and plugin_ref are both null → local mode."""
+    r = _base_partial(plugin_repo=None, plugin_ref=None)
+    validate_result(r)
 
 
-def test_missing_scoring_rejected():
-    r = _success()
-    del r["scoring"]
-    with pytest.raises(ValidationError, match="scoring"):
-        validate(r)
+def test_url_ref_plugin_mode_validates():
+    """plugin_repo and plugin_ref both non-null → URL+ref mode."""
+    r = _base_partial(
+        plugin_repo="https://github.com/elliewlh2094/robotics-agent-skills",
+        plugin_ref="v0.1.0",
+    )
+    validate_result(r)
 
 
-def test_missing_status_rejected():
-    r = _success()
-    del r["status"]
-    with pytest.raises(ValidationError, match="status"):
-        validate(r)
+def test_mixed_mode_one_null_one_string_rejected():
+    """plugin_repo null but plugin_ref string is neither mode — must fail."""
+    r = _base_partial(plugin_repo=None, plugin_ref="v0.1.0")
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
 
 
-def test_unknown_top_level_field_rejected():
-    """additionalProperties: false at the top level catches typos and stale fields."""
-    r = _success()
-    r["skils_invoked"] = []  # typo of skills_invoked, also a "planned" field
-    with pytest.raises(ValidationError):
-        validate(r)
-
-
-# ---------------------------------------------------------------------------
-# Negative cases — type / shape constraints
-# ---------------------------------------------------------------------------
-
-def test_schema_version_must_be_one():
-    r = _success()
-    r["schema_version"] = 2
-    with pytest.raises(ValidationError):
-        validate(r)
-
-
-def test_invalid_status_enum_rejected():
-    r = _success()
-    r["status"] = "almost-done"
-    with pytest.raises(ValidationError, match="status"):
-        validate(r)
-
-
-def test_malformed_plugin_sha_rejected():
-    r = _success()
-    r["plugin_sha"] = "not-a-sha"
-    with pytest.raises(ValidationError):
-        validate(r)
-
-
-def test_malformed_base_sha_rejected():
-    r = _success()
-    r["base_sha"] = "abc123"  # too short
-    with pytest.raises(ValidationError):
-        validate(r)
-
-
-def test_negative_transcript_bytes_rejected():
-    r = _success()
-    r["transcript_bytes"] = -1
-    with pytest.raises(ValidationError):
-        validate(r)
+def test_other_mixed_mode_rejected():
+    """plugin_repo string but plugin_ref null is also not a valid mode."""
+    r = _base_partial(plugin_repo="https://x/y", plugin_ref=None)
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
 
 
 # ---------------------------------------------------------------------------
-# Negative cases — status-conditional rules
+# scratch_dir invariants — refinement A
+# ---------------------------------------------------------------------------
+
+def test_success_with_scratch_dir_rejected():
+    """On success the worktree was pruned; scratch_dir must not be present.
+    Schema enforces this via `properties: {scratch_dir: false}` in the success
+    branch — the false-schema rejects any value. The error message references
+    the value rather than the field name, so we check on the exception type."""
+    r = _base_success()
+    r["scratch_dir"] = "/tmp/exp-scratch/foo"
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
+
+
+def test_incomplete_without_scratch_dir_rejected():
+    """Per refinement A, scratch_dir is set from the very first partial-write."""
+    r = _base_partial()
+    r.pop("scratch_dir")
+    with pytest.raises(ResultValidationError, match="scratch_dir"):
+        validate_result(r)
+
+
+def test_error_without_scratch_dir_rejected():
+    """status=error retains the worktree for forensics; scratch_dir required."""
+    err = _base_partial()
+    err.update({
+        "status": "error",
+        "completed_at": "2026-05-03T12:05:00Z",
+        "runtime_s": 300.0,
+        "exit_code": 1,
+        "error": {"type": "non-zero-exit", "message": "x"},
+        "scoring": {"scope_check": {"out_of_scope_file_count": 0, "out_of_scope_paths": []}},
+    })
+    err.pop("scratch_dir")
+    with pytest.raises(ResultValidationError, match="scratch_dir"):
+        validate_result(err)
+
+
+# ---------------------------------------------------------------------------
+# status-specific invariants
 # ---------------------------------------------------------------------------
 
 def test_success_with_non_null_error_rejected():
-    """status=success implies error MUST be null."""
-    r = _success()
-    r["error"] = {"type": "anything", "message": "should not be here"}
-    with pytest.raises(ValidationError):
-        validate(r)
+    r = _base_success()
+    r["error"] = {"type": "x", "message": "y"}
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
 
 
-def test_success_with_null_runtime_rejected():
-    """status=success implies runtime_s MUST be non-null."""
-    r = _success()
-    r["runtime_s"] = None
-    with pytest.raises(ValidationError):
-        validate(r)
+def test_error_status_with_null_error_rejected():
+    err = _base_partial()
+    err.update({
+        "status": "error",
+        "completed_at": "2026-05-03T12:05:00Z",
+        "runtime_s": 300.0,
+        "exit_code": 1,
+        "error": None,  # invalid: error status requires non-null error
+        "scoring": {"scope_check": {"out_of_scope_file_count": 0, "out_of_scope_paths": []}},
+    })
+    with pytest.raises(ResultValidationError):
+        validate_result(err)
 
 
-def test_success_with_null_exit_code_rejected():
-    r = _success()
-    r["exit_code"] = None
-    with pytest.raises(ValidationError):
-        validate(r)
+def test_incomplete_with_premature_scoring_rejected():
+    """Partial-write must have scoring={}; scope_check landing here is a bug."""
+    r = _base_partial()
+    r["scoring"] = {"scope_check": {"out_of_scope_file_count": 0, "out_of_scope_paths": []}}
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
 
 
-def test_error_with_null_error_object_rejected():
-    """status=error implies error MUST be a populated object."""
-    r = _error()
-    r["error"] = None
-    with pytest.raises(ValidationError):
-        validate(r)
+def test_incomplete_with_nonzero_judge_calls_rejected():
+    r = _base_partial()
+    r["judge_calls"] = 3
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
 
 
-def test_error_object_missing_type_rejected():
-    r = _error()
-    r["error"] = {"message": "no type"}
-    with pytest.raises(ValidationError):
-        validate(r)
-
-
-# ---------------------------------------------------------------------------
-# Negative cases — scoring sub-schema
-# ---------------------------------------------------------------------------
-
-def test_scope_check_with_negative_count_rejected():
-    r = _success()
-    r["scoring"]["scope_check"]["out_of_scope_count"] = -1
-    with pytest.raises(ValidationError):
-        validate(r)
-
-
-def test_scope_check_missing_paths_rejected():
-    r = _success()
-    del r["scoring"]["scope_check"]["out_of_scope_paths"]
-    with pytest.raises(ValidationError):
-        validate(r)
-
-
-def test_rubric_with_neither_success_nor_failure_shape_rejected():
-    r = _success()
-    r["scoring"]["rubric"] = {"some_other_shape": True}
-    with pytest.raises(ValidationError):
-        validate(r)
-
-
-def test_rubric_per_trial_missing_rationale_rejected():
-    r = _success()
-    r["scoring"]["rubric"]["per_trial"][0].pop("rationale")
-    with pytest.raises(ValidationError):
-        validate(r)
-
-
-def test_rubric_negative_stdev_rejected():
-    """Stdev cannot be negative — sample stdev is non-negative by construction."""
-    r = _success()
-    r["scoring"]["rubric"]["overall_stdev"] = -0.1
-    with pytest.raises(ValidationError):
-        validate(r)
+def test_success_without_scope_check_rejected():
+    """Once the agent ran, scope_check is mandatory in scoring."""
+    r = _base_success()
+    r["scoring"].pop("scope_check")
+    with pytest.raises(ResultValidationError, match="scope_check"):
+        validate_result(r)
 
 
 # ---------------------------------------------------------------------------
-# iter_errors — for the validate-on-write hook's forensic message
+# Field-shape invariants
 # ---------------------------------------------------------------------------
 
-def test_iter_errors_returns_empty_for_valid():
-    assert iter_errors(_success()) == []
+def test_invalid_plugin_sha_rejected():
+    r = _base_partial(plugin_sha="not-a-sha")
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
 
 
-def test_iter_errors_returns_messages_for_invalid():
-    r = _success()
-    r["status"] = "almost-done"
-    msgs = iter_errors(r)
-    assert msgs
-    assert any("status" in m for m in msgs)
+def test_null_plugin_sha_validates():
+    """Allowed when plugin path isn't a git working tree (runner emits warning)."""
+    r = _base_partial(plugin_sha=None)
+    validate_result(r)
+
+
+def test_unknown_top_level_field_rejected():
+    """additionalProperties: false on top-level object catches drift."""
+    r = _base_partial()
+    r["mystery_field"] = "wat"
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
+
+
+def test_score_outside_0_3_rejected():
+    r = _base_success()
+    r["scoring"]["rubric_scores"]["per_trial"][0]["scores"]["hypothesis"] = 5
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
+
+
+def test_overall_mean_outside_0_3_rejected():
+    r = _base_success()
+    r["scoring"]["rubric_scores"]["overall_mean"] = 999.0
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
+
+
+def test_rubric_scores_missing_stdev_rejected():
+    r = _base_success()
+    del r["scoring"]["rubric_scores"]["stdev"]
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
+
+
+def test_rubric_scores_error_path_validates():
+    """The judge can fail; scoring.rubric_scores becomes {error: {...}}."""
+    r = _base_success()
+    r["scoring"]["rubric_scores"] = {
+        "error": {"type": "JudgeInvocationError", "message": "claude judge timed out"},
+    }
+    validate_result(r)
+
+
+def test_unknown_scoring_subkey_allowed():
+    """Future scorers (test_pass, sim_metric, static_check) land here without
+    a schema bump (additionalProperties: true on scoring)."""
+    r = _base_success()
+    r["scoring"]["test_pass"] = {"resolved": True}
+    validate_result(r)
+
+
+# ---------------------------------------------------------------------------
+# schema_version is pinned
+# ---------------------------------------------------------------------------
+
+def test_wrong_schema_version_rejected():
+    r = _base_partial(schema_version=2)
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
