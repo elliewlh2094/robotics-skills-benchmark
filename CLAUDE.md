@@ -58,4 +58,5 @@ See `docs/reliability-criteria.md` for the full mapping.
 | Tweak scoring | `harness/score_rubric.py` or `harness/score_tests.py` |
 | Add a new sim Dockerfile | `harness/docker/<task-id>/` |
 | Read past experiments | `experiments/<YYYY-MM-DD>_<tag>_<task>_<run>/result.json` |
+| `result.json` field reference (canonical) | `docs/result-json-reference.md` (human) + `harness/schemas/result.schema.yaml` (machine, validated on every write) |
 | Cross-version analysis | `analysis/reports/` |

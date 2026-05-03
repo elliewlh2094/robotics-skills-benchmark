@@ -16,7 +16,11 @@ Lightweight operational pointer. Ephemeral on purpose — the durable references
 
 **T1.5 — run V1 baseline (3 trials at unmodified fork).** Full task definition at [`docs/v1-tasks.md`](docs/v1-tasks.md).
 
-Prereqs done: scope-check + rubric scorer landed in T1.4 (scoring section of `result.json` now populated end-to-end via `harness/scope_check.py` and `harness/score_rubric.py`; the real `claude --bare --json-schema` judge subprocess is exercised here for the first time).
+Prereqs done:
+- T1.4 — scope-check + rubric scorer landed (scoring section of `result.json` populated end-to-end via `harness/scope_check.py` and `harness/score_rubric.py`)
+- T1.4a — canonical `result.json` schema + reference + validate-on-write (per [ADR-0008](docs/decisions/0008-canonical-result-json-schema.md); see [`docs/result-json-reference.md`](docs/result-json-reference.md)). Every result.json is now schema-validated before being persisted.
+
+T1.5 will exercise the real `claude --bare --json-schema` judge subprocess for the first time.
 
 Steps:
 1. Tag `elliewlh2094/robotics-agent-skills` HEAD as `v0.1.0` in the plugin repo.
@@ -30,7 +34,7 @@ Steps:
 
 | Phase | Status | Tasks done | Tasks pending |
 |---|---|---|---|
-| Phase 1 (Foundation) | 🟡 in progress | T1.1, T1.2, T1.3, T1.4 | T1.5 |
+| Phase 1 (Foundation) | 🟡 in progress | T1.1, T1.2, T1.3, T1.4, T1.4a | T1.5 |
 | Phase 2 (First plugin iteration) | ⏳ blocked by Checkpoint A | — | T2.1–T2.4 |
 | Phase 3 (TDD + debugging) | ⏳ post-V1 | — | T3.1–T3.5 |
 | Phase 4 (Spec + planning) | ⏳ post-V1 | — | T4.1–T4.4 |
@@ -50,6 +54,7 @@ All architectural decisions are recorded in [`docs/decisions/`](docs/decisions/)
 | One logical change per plugin tag | [0005](docs/decisions/0005-one-change-per-plugin-tag.md) |
 | Headless `claude -p` for runner and judge; `--tools` (not `--allowedTools`) for hard whitelist; `--max-turns` ceiling | [0006](docs/decisions/0006-headless-claude-code-for-runner-and-judge.md) |
 | V1 sim_engine relaxed (mock hw OK); humble branch pinned; long-term Gazebo direction unchanged | [0007](docs/decisions/0007-v1-sim-engine-relaxation.md) |
+| Canonical `result.json` schema + reference + validate-on-write | [0008](docs/decisions/0008-canonical-result-json-schema.md) |
 
 ---
 

@@ -1,7 +1,7 @@
 # ADR-0001: Three-surface repository topology with URL+SHA task references
 
 ## Status
-Accepted
+Accepted. **Updated 2026-05-03:** the `result.json` field set referenced in this ADR's Consequences section is now canonically defined in [`docs/result-json-reference.md`](../result-json-reference.md) per [ADR-0008](0008-canonical-result-json-schema.md).
 
 ## Date
 2026-05-02

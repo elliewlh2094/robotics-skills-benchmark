@@ -143,6 +143,39 @@ After both modules exist, `harness/run_experiment.py` is updated to call them in
 
 ---
 
+#### Task T1.4a: Canonical `result.json` schema  ✅
+
+**Description:** Consolidate the implicit `result.json` shape (previously restated across 5 docs and the runner's `partial:` literal) into one machine-verifiable schema, one human-readable reference, and a validate-on-write hook in the runner. Lock the contract before T1.5 writes the first real data — every later schema change becomes a migration. Per [ADR-0008](decisions/0008-canonical-result-json-schema.md).
+
+**Acceptance criteria:**
+- [x] `harness/schemas/result.schema.yaml` exists; status-conditional `if/then` rules cover partial/success/error/timeout
+- [x] `docs/result-json-reference.md` covers every field with Type / When present / Writer / Semantics; "Planned" section lists the four deferred fields
+- [x] `harness/validate_result.py` provides `--all` + single-path CLI plus `validate(dict)` / `iter_errors(dict)` programmatic API
+- [x] `write_result()` validates before atomic rename; rejected payload preserved at `result.invalid.json`
+- [x] [ADR-0008](decisions/0008-canonical-result-json-schema.md) records the decision; ADR-0001 receives a forward-pointer
+- [x] `docs/spec.md` FR3, `docs/reliability-criteria.md`, `docs/v1-plan.md`, `docs/roadmap.md` reduced to pointers (narrative kept, field listings removed)
+- [x] `docs/spec.md` FR3 corrected: `exit_status` → `exit_code` (matches code)
+
+**Verification:**
+- [x] `python3 -m pytest harness/tests/ -q` passes (90 tests at task close: 27 prior + 12 scope_check + 12 score_rubric + 7 runner-integration + 29 validator + 3 write_result regression)
+- [x] `python3 harness/validate_result.py --all` exits 0 (no result.json files yet, but command works)
+- [x] `grep -rn "exit_status" docs/ harness/` returns nothing
+
+**Dependencies:** T1.4 (just landed `scoring.scope_check` and `scoring.rubric` — the schema captures their shape)
+
+**Files likely touched:**
+- `harness/schemas/result.schema.yaml`
+- `harness/validate_result.py`
+- `harness/tests/test_validate_result.py`
+- `harness/run_experiment.py` (`write_result()` validate-on-write + `ResultSchemaError`)
+- `docs/result-json-reference.md`
+- `docs/decisions/0008-canonical-result-json-schema.md`
+- `docs/spec.md`, `docs/reliability-criteria.md`, `docs/v1-plan.md`, `docs/roadmap.md`, `docs/decisions/0001-three-surface-repo-topology.md`
+
+**Estimated scope:** Small-to-medium (schema + validator + reference doc + ADR + 5 doc reductions)
+
+---
+
 #### Task T1.5: Run V1 baseline (3 trials at unmodified fork)
 
 **Description:** Tag the current `elliewlh2094/robotics-agent-skills` HEAD as `v0.1.0` in the plugin repo. Run `run_experiment.py` against the V1 task at this tag, three times (`baseline-1`, `baseline-2`, `baseline-3`). Sanity-check that each `result.json` is well-formed and that the agent actually produced an `EXPERIMENT.md`. Measure per-dimension stdev across the three runs and document in `analysis/baseline-v0.1.0.md`. This stdev sets the noise floor against which Phase 2's plugin delta is judged.
@@ -150,7 +183,7 @@ After both modules exist, `harness/run_experiment.py` is updated to call them in
 **Acceptance criteria:**
 - [ ] Three `experiments/...v0.1.0...diffbot-experiment-design...baseline-{1,2,3}/` directories exist with valid `result.json`
 - [ ] Each has a non-empty `EXPERIMENT.md` in `diff.patch`
-- [ ] `result.json.scoring.rubric_scores.stdev` recorded for all three
+- [ ] `result.json.scoring.rubric.stdev` and `overall_stdev` recorded for all three
 - [ ] Cross-run pooled stdev recorded in `analysis/baseline-v0.1.0.md`
 - [ ] If any run's status is not `success`, the deviation is investigated and documented before the task closes
 
@@ -159,7 +192,7 @@ After both modules exist, `harness/run_experiment.py` is updated to call them in
 - [ ] Visual review of each EXPERIMENT.md for plausible content (the agent wrote *something* on-topic)
 - [ ] `analysis/baseline-v0.1.0.md` is concrete with numeric stdev values, not handwaving
 
-**Dependencies:** T1.4 (scoring), T1.3 (runner), T1.2 (task)
+**Dependencies:** T1.4 (scoring), T1.4a (schema validation), T1.3 (runner), T1.2 (task)
 
 **Files likely touched:**
 - `experiments/2026-...-_v0.1.0_diffbot-experiment-design_baseline-{1,2,3}/`

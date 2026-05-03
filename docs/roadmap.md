@@ -36,7 +36,7 @@ This project closes both gaps simultaneously.
 | Plugin (`elliewlh2094/robotics-agent-skills`) | Git tags, semver-ish: `vMAJOR.MINOR.PATCH` |
 | Harness (this repo) | Untagged for now; tagged when external contributors arrive |
 | Task instances | `tasks/index.yaml` carries `schema_version`; bump on schema breaking changes |
-| Result artifacts | Pinned by `(plugin_tag, base_sha, schema_version, run_id)` in `result.json` |
+| Result artifacts | Pinned by `(plugin_tag, base_sha, schema_version, run_id)` in `result.json` (canonical field shape: [`docs/result-json-reference.md`](result-json-reference.md), [ADR-0008](decisions/0008-canonical-result-json-schema.md)) |
 
 **Plugin version conventions:**
 
@@ -72,8 +72,8 @@ This project closes both gaps simultaneously.
 
 ### V1 success criteria
 
-- One full experiment loop runs end-to-end: `(plugin_tag, task_id, run_id) → result.json`
-- Result contains: rubric scores (mean ± stdev across N=3 judge trials), automated metrics (out_of_scope_file_count, runtime, files_modified), audit trail (transcript, diff)
+- One full experiment loop runs end-to-end: `(plugin_tag, task_id, run_id) → result.json` (validated against the canonical schema; see [`docs/result-json-reference.md`](result-json-reference.md))
+- Result contains: rubric scores (mean ± stdev across N=3 judge trials), automated metrics (scope-check counts, runtime, files modified), audit trail (transcript, diff)
 - v0.2.0 score delta vs v0.1.0 is interpretable (>1× pooled stdev = real signal; ≤ = honestly reported as noise)
 - Repo stays under 50 MB; no vendored task code
 
