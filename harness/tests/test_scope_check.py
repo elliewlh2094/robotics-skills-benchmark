@@ -1,6 +1,6 @@
 """Unit tests for harness.scope_check.
 
-Pure function over (unified_diff, scope_files) → {out_of_scope_count,
+Pure function over (unified_diff, scope_files) → {out_of_scope_file_count,
 out_of_scope_paths}. All inputs are hand-constructed strings; no subprocess.
 """
 from __future__ import annotations
@@ -63,13 +63,13 @@ def _renamed_file_diff(old: str, new: str) -> str:
 
 def test_empty_diff_yields_zero_violations():
     result = compute_scope_violations("", ["EXPERIMENT.md"])
-    assert result == {"out_of_scope_count": 0, "out_of_scope_paths": []}
+    assert result == {"out_of_scope_file_count": 0, "out_of_scope_paths": []}
 
 
 def test_only_in_scope_file_yields_zero_violations():
     diff = _new_file_diff("EXPERIMENT.md")
     result = compute_scope_violations(diff, ["EXPERIMENT.md"])
-    assert result["out_of_scope_count"] == 0
+    assert result["out_of_scope_file_count"] == 0
     assert result["out_of_scope_paths"] == []
 
 
@@ -80,14 +80,14 @@ def test_only_in_scope_file_yields_zero_violations():
 def test_single_out_of_scope_modification_is_flagged():
     diff = _modified_file_diff("src/main.py")
     result = compute_scope_violations(diff, ["EXPERIMENT.md"])
-    assert result["out_of_scope_count"] == 1
+    assert result["out_of_scope_file_count"] == 1
     assert result["out_of_scope_paths"] == ["src/main.py"]
 
 
 def test_new_file_outside_scope_is_flagged():
     diff = _new_file_diff("notes.txt")
     result = compute_scope_violations(diff, ["EXPERIMENT.md"])
-    assert result == {"out_of_scope_count": 1, "out_of_scope_paths": ["notes.txt"]}
+    assert result == {"out_of_scope_file_count": 1, "out_of_scope_paths": ["notes.txt"]}
 
 
 def test_deleted_file_outside_scope_is_flagged():
@@ -95,7 +95,7 @@ def test_deleted_file_outside_scope_is_flagged():
     touched something it wasn't allowed to."""
     diff = _deleted_file_diff("README.md")
     result = compute_scope_violations(diff, ["EXPERIMENT.md"])
-    assert result == {"out_of_scope_count": 1, "out_of_scope_paths": ["README.md"]}
+    assert result == {"out_of_scope_file_count": 1, "out_of_scope_paths": ["README.md"]}
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@ def test_mixed_diff_counts_only_out_of_scope_files():
         + _new_file_diff("notes.txt")
     )
     result = compute_scope_violations(diff, ["EXPERIMENT.md"])
-    assert result["out_of_scope_count"] == 2
+    assert result["out_of_scope_file_count"] == 2
     assert result["out_of_scope_paths"] == ["notes.txt", "src/main.py"]
 
 
@@ -126,7 +126,7 @@ def test_glob_pattern_matches_within_directory():
         + _new_file_diff("src/foo.py")
     )
     result = compute_scope_violations(diff, ["docs/*"])
-    assert result == {"out_of_scope_count": 1, "out_of_scope_paths": ["src/foo.py"]}
+    assert result == {"out_of_scope_file_count": 1, "out_of_scope_paths": ["src/foo.py"]}
 
 
 def test_multiple_scope_patterns_union():
@@ -138,7 +138,7 @@ def test_multiple_scope_patterns_union():
         + _new_file_diff("src/main.py")
     )
     result = compute_scope_violations(diff, ["EXPERIMENT.md", "ANALYSIS.md"])
-    assert result == {"out_of_scope_count": 1, "out_of_scope_paths": ["src/main.py"]}
+    assert result == {"out_of_scope_file_count": 1, "out_of_scope_paths": ["src/main.py"]}
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ def test_rename_inside_scope_is_not_a_violation():
 def test_rename_with_both_endpoints_in_scope_is_clean():
     diff = _renamed_file_diff("EXPERIMENT.md", "EXPERIMENT_v2.md")
     result = compute_scope_violations(diff, ["EXPERIMENT*.md"])
-    assert result == {"out_of_scope_count": 0, "out_of_scope_paths": []}
+    assert result == {"out_of_scope_file_count": 0, "out_of_scope_paths": []}
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ def test_paths_are_sorted_and_unique():
     )
     result = compute_scope_violations(diff, [])
     assert result["out_of_scope_paths"] == ["a.txt", "m.txt", "z.txt"]
-    assert result["out_of_scope_count"] == 3
+    assert result["out_of_scope_file_count"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -186,4 +186,4 @@ def test_paths_are_sorted_and_unique():
 def test_empty_scope_files_treats_all_changes_as_violations():
     diff = _new_file_diff("anything.txt")
     result = compute_scope_violations(diff, [])
-    assert result == {"out_of_scope_count": 1, "out_of_scope_paths": ["anything.txt"]}
+    assert result == {"out_of_scope_file_count": 1, "out_of_scope_paths": ["anything.txt"]}

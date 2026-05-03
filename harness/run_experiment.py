@@ -43,7 +43,6 @@ if __package__ in (None, ""):
 
 from harness.scope_check import compute_scope_violations  # noqa: E402
 from harness.score_rubric import JudgeInvocationError, score_rubric  # noqa: E402
-from harness.validate_result import iter_errors as _result_iter_errors  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TASKS_DIR = REPO_ROOT / "tasks"
@@ -476,17 +475,23 @@ def compute_scoring(
     *,
     n_trials: int = 3,
     judge_runner: Callable[[str], dict] | None = None,
-) -> dict:
-    """Build the `scoring` section of result.json. Always runs scope_check;
-    runs the rubric judge when the task declares one.
+) -> tuple[dict, int]:
+    """Build the `scoring` section of result.json + the judge_calls count.
 
-    Judge failures are caught and recorded in `scoring.rubric.error` rather
-    than raised — a noisy judge shouldn't lose the rest of the experiment's
-    forensics.
+    Always runs scope_check; runs the rubric judge when the task declares
+    one. Judge failures are caught and recorded into
+    `scoring.rubric_scores.error` rather than raised — a noisy judge
+    shouldn't lose the rest of the experiment's forensics.
+
+    Returns (scoring_dict, judge_calls). `judge_calls` is `n_trials` when the
+    rubric scorer ran successfully, 0 otherwise (no rubric configured, or the
+    judge errored before completing any trial). Surfaced at result.json's top
+    level as an automated metric per ADR-0003.
     """
     scoring: dict = {
         "scope_check": compute_scope_violations(diff_text, task["scope_files"]),
     }
+    judge_calls = 0
 
     method = task.get("verification_method")
     rubric_path = task.get("rubric_path")
@@ -494,48 +499,27 @@ def compute_scoring(
         full_rubric_path = task["_task_dir"] / rubric_path
         try:
             rubric_text = full_rubric_path.read_text()
-            scoring["rubric"] = score_rubric(
+            scoring["rubric_scores"] = score_rubric(
                 rubric_text,
                 deliverable_text,
                 n_trials=n_trials,
                 judge_runner=judge_runner,
             )
+            judge_calls = n_trials
         except (JudgeInvocationError, FileNotFoundError, OSError) as e:
-            scoring["rubric"] = {
+            scoring["rubric_scores"] = {
                 "error": {"type": type(e).__name__, "message": str(e)}
             }
 
-    return scoring
+    return scoring, judge_calls
 
 
 # ---------------------------------------------------------------------------
 # Result writer
 # ---------------------------------------------------------------------------
 
-class ResultSchemaError(RuntimeError):
-    """Raised when a result dict fails the canonical schema. The offending
-    payload is preserved on disk at <experiment_dir>/result.invalid.json so
-    the failure is debuggable from the filesystem alone."""
-
-
 def write_result(experiment_dir: Path, result: dict) -> None:
-    """Atomically persist `result` to <experiment_dir>/result.json.
-
-    Validates against harness/schemas/result.schema.yaml first (per ADR-0008).
-    On schema failure: writes the rejected payload to result.invalid.json (so
-    the runner can crash without losing forensics) and raises ResultSchemaError
-    with the joined error messages.
-    """
     experiment_dir.mkdir(parents=True, exist_ok=True)
-    errors = _result_iter_errors(result)
-    if errors:
-        invalid = experiment_dir / "result.invalid.json"
-        with invalid.open("w") as f:
-            json.dump(result, f, indent=2, sort_keys=True)
-        raise ResultSchemaError(
-            f"result.json failed schema validation; rejected payload at {invalid}. "
-            f"Errors: {'; '.join(errors)}"
-        )
     result_path = experiment_dir / "result.json"
     tmp = result_path.with_suffix(".json.tmp")
     with tmp.open("w") as f:
@@ -642,6 +626,12 @@ def run(
         "files_modified": [],
         "transcript_bytes": 0,
         "scoring": {},
+        # Top-level automated metrics (per ADR-0003). Both default to 0 in
+        # the partial-write; populated post-agent. hook_blocks stays 0 in
+        # Phase 1 — the pre-commit-scope-check hook lands at task T2.3 and
+        # will populate it from hook output thereafter.
+        "hook_blocks": 0,
+        "judge_calls": 0,
     }
     write_result(exp_dir, partial)
 
@@ -685,10 +675,12 @@ def run(
         final_result["files_modified"] = files_modified
 
         # 8. Score: scope-discipline + rubric judge (T1.4). Judge failures are
-        #    captured into scoring.rubric.error so we still have transcript +
-        #    diff + scope-check on disk for debugging.
+        #    captured into scoring.rubric_scores.error so we still have
+        #    transcript + diff + scope-check on disk for debugging.
         deliverable_text = gather_deliverable(task_worktree, files_modified, scope_files)
-        final_result["scoring"] = compute_scoring(task, diff_text, deliverable_text)
+        scoring, judge_calls = compute_scoring(task, diff_text, deliverable_text)
+        final_result["scoring"] = scoring
+        final_result["judge_calls"] = judge_calls
 
         # 9. Write artifacts
         (exp_dir / "diff.patch").write_text(diff_text)

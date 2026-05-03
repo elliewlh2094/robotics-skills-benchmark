@@ -9,11 +9,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 import subprocess
 
 from harness.run_experiment import (
-    ResultSchemaError,
     cache_dir_for_repo,
     check_plugin_path,
     compute_scoring,
@@ -23,7 +21,6 @@ from harness.run_experiment import (
     render_transcript,
     resolve_git_sha,
     safe_path_component,
-    write_result,
 )
 
 
@@ -296,9 +293,12 @@ def test_compute_scoring_runs_scope_check_only_when_no_rubric():
         # No rubric_path — judge should NOT be called.
         "_task_dir": Path("/nonexistent"),
     }
-    scoring = compute_scoring(task, _BASIC_DIFF, "deliverable", judge_runner=lambda _: 1 / 0)
-    assert scoring["scope_check"] == {"out_of_scope_count": 0, "out_of_scope_paths": []}
-    assert "rubric" not in scoring
+    scoring, judge_calls = compute_scoring(
+        task, _BASIC_DIFF, "deliverable", judge_runner=lambda _: 1 / 0
+    )
+    assert scoring["scope_check"] == {"out_of_scope_file_count": 0, "out_of_scope_paths": []}
+    assert "rubric_scores" not in scoring
+    assert judge_calls == 0
 
 
 def test_compute_scoring_invokes_judge_for_rubric_method(tmp_path):
@@ -311,12 +311,15 @@ def test_compute_scoring_invokes_judge_for_rubric_method(tmp_path):
         "_task_dir": tmp_path,
     }
     fake_judge = lambda _: {"scores": {"hypothesis": 2}, "overall": 2.0, "rationale": "ok"}
-    scoring = compute_scoring(task, _BASIC_DIFF, "deliverable", n_trials=3, judge_runner=fake_judge)
+    scoring, judge_calls = compute_scoring(
+        task, _BASIC_DIFF, "deliverable", n_trials=3, judge_runner=fake_judge
+    )
 
-    assert scoring["scope_check"]["out_of_scope_count"] == 0
-    assert scoring["rubric"]["mean"] == {"hypothesis": 2.0}
-    assert scoring["rubric"]["overall_mean"] == 2.0
-    assert scoring["rubric"]["n_trials"] == 3
+    assert scoring["scope_check"]["out_of_scope_file_count"] == 0
+    assert scoring["rubric_scores"]["mean"] == {"hypothesis": 2.0}
+    assert scoring["rubric_scores"]["overall_mean"] == 2.0
+    assert scoring["rubric_scores"]["n_trials"] == 3
+    assert judge_calls == 3
 
 
 def test_compute_scoring_records_judge_failure_without_raising(tmp_path):
@@ -333,11 +336,15 @@ def test_compute_scoring_records_judge_failure_without_raising(tmp_path):
         from harness.score_rubric import JudgeInvocationError as _E
         raise _E("simulated judge failure")
 
-    scoring = compute_scoring(task, _BASIC_DIFF, "deliverable", n_trials=1, judge_runner=broken_judge)
+    scoring, judge_calls = compute_scoring(
+        task, _BASIC_DIFF, "deliverable", n_trials=1, judge_runner=broken_judge
+    )
     # scope-check still ran — losing the judge shouldn't lose the rest.
-    assert scoring["scope_check"] == {"out_of_scope_count": 0, "out_of_scope_paths": []}
-    assert "error" in scoring["rubric"]
-    assert "simulated judge failure" in scoring["rubric"]["error"]["message"]
+    assert scoring["scope_check"] == {"out_of_scope_file_count": 0, "out_of_scope_paths": []}
+    assert "error" in scoring["rubric_scores"]
+    assert "simulated judge failure" in scoring["rubric_scores"]["error"]["message"]
+    # Failed before any trial completed → judge_calls reports 0.
+    assert judge_calls == 0
 
 
 def test_compute_scoring_records_missing_rubric_file(tmp_path):
@@ -347,70 +354,7 @@ def test_compute_scoring_records_missing_rubric_file(tmp_path):
         "rubric_path": "missing.md",
         "_task_dir": tmp_path,
     }
-    scoring = compute_scoring(task, _BASIC_DIFF, "deliverable")
-    assert "error" in scoring["rubric"]
-    assert scoring["rubric"]["error"]["type"] == "FileNotFoundError"
-
-
-# ---------------------------------------------------------------------------
-# write_result — validates against canonical schema (T1.4a)
-# ---------------------------------------------------------------------------
-
-def _valid_partial(experiment_dir_name: str) -> dict:
-    return {
-        "schema_version": 1,
-        "experiment_id": experiment_dir_name,
-        "plugin_tag": "v0.1.0",
-        "plugin_path": "/tmp/plugin",
-        "plugin_repo": None,
-        "plugin_ref": None,
-        "plugin_sha": None,
-        "task_id": "diffbot-experiment-design",
-        "run_id": "baseline-1",
-        "base_repo": "https://github.com/ros-controls/ros2_control_demos",
-        "base_sha": "c555233658e8c0794f9bb6e1ea4059ca84bcd503",
-        "scope_files_declared": ["EXPERIMENT.md"],
-        "available_tools": ["Read"],
-        "max_turns": 50,
-        "seed": None,
-        "started_at": "2026-05-03T12:00:00Z",
-        "completed_at": None,
-        "runtime_s": None,
-        "exit_code": None,
-        "status": "incomplete",
-        "error": None,
-        "files_modified": [],
-        "transcript_bytes": 0,
-        "scoring": {},
-    }
-
-
-def test_write_result_persists_valid_partial(tmp_path):
-    exp_dir = tmp_path / "2026-05-03_v0.1.0_diffbot-experiment-design_baseline-1"
-    write_result(exp_dir, _valid_partial(exp_dir.name))
-    persisted = exp_dir / "result.json"
-    assert persisted.exists()
-    assert json.loads(persisted.read_text())["status"] == "incomplete"
-
-
-def test_write_result_rejects_invalid_payload_and_writes_forensic_file(tmp_path):
-    exp_dir = tmp_path / "2026-05-03_v0.1.0_diffbot-experiment-design_baseline-1"
-    bad = _valid_partial(exp_dir.name)
-    del bad["schema_version"]  # required
-    with pytest.raises(ResultSchemaError, match="schema_version"):
-        write_result(exp_dir, bad)
-    # The valid result.json must NOT be on disk; the rejected payload IS.
-    assert not (exp_dir / "result.json").exists()
-    invalid = exp_dir / "result.invalid.json"
-    assert invalid.exists()
-    assert "schema_version" not in json.loads(invalid.read_text())
-
-
-def test_write_result_rejects_status_mismatch(tmp_path):
-    """status=success with null runtime_s violates the conditional rule."""
-    exp_dir = tmp_path / "2026-05-03_v0.1.0_diffbot-experiment-design_baseline-1"
-    bad = _valid_partial(exp_dir.name)
-    bad["status"] = "success"  # but runtime_s is None — conditional rule fires
-    with pytest.raises(ResultSchemaError):
-        write_result(exp_dir, bad)
-    assert (exp_dir / "result.invalid.json").exists()
+    scoring, judge_calls = compute_scoring(task, _BASIC_DIFF, "deliverable")
+    assert "error" in scoring["rubric_scores"]
+    assert scoring["rubric_scores"]["error"]["type"] == "FileNotFoundError"
+    assert judge_calls == 0

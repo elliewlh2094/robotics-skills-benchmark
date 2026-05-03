@@ -33,7 +33,7 @@ def _matches_any(path: str, patterns: list[str]) -> bool:
 
 
 def compute_scope_violations(diff: str, scope_files: list[str]) -> dict:
-    """Return `{out_of_scope_count, out_of_scope_paths}` for the given diff.
+    """Return `{out_of_scope_file_count, out_of_scope_paths}` for the given diff.
 
     A path is in scope if it matches any pattern in `scope_files`. An empty
     `scope_files` means *no* path is in scope — every changed file is a violation.
@@ -42,6 +42,6 @@ def compute_scope_violations(diff: str, scope_files: list[str]) -> dict:
         p for p in _changed_paths(diff) if not _matches_any(p, scope_files)
     )
     return {
-        "out_of_scope_count": len(out_of_scope),
+        "out_of_scope_file_count": len(out_of_scope),
         "out_of_scope_paths": out_of_scope,
     }
