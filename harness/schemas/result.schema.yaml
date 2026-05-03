@@ -1,0 +1,353 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://github.com/elliewlh2094/robotics-skills-benchmark/blob/main/harness/schemas/result.schema.yaml"
+title: "Robotics Skills Benchmark Experiment Result"
+description: |
+  Canonical schema for `experiments/<...>/result.json`. One file per experiment.
+  Status state machine: `incomplete` → {`success`, `error`, `timeout`}. Field
+  semantics, the writer module per field, and worked examples live in
+  docs/result-json-reference.md (canonical reference). ADR-0008 records the
+  decision to consolidate. Schema version is bumped any time a field is added,
+  removed, renamed, or has its required/nullable status changed.
+
+type: object
+additionalProperties: false
+
+# ---------------------------------------------------------------------------
+# Always-required fields. Identification + status fields are populated when
+# the partial result is first written; the runner crashes-and-leaves a partial
+# rather than skipping the write, so even a status="incomplete" file has these.
+# ---------------------------------------------------------------------------
+required:
+  - schema_version
+  - experiment_id
+  - plugin_tag
+  - plugin_path
+  - plugin_repo
+  - plugin_ref
+  - plugin_sha
+  - task_id
+  - run_id
+  - base_repo
+  - base_sha
+  - scope_files_declared
+  - available_tools
+  - max_turns
+  - seed
+  - started_at
+  - completed_at
+  - runtime_s
+  - exit_code
+  - status
+  - error
+  - files_modified
+  - transcript_bytes
+  - scoring
+
+properties:
+
+  # --- Reproducibility tuple (ADR-0001) -----------------------------------
+
+  schema_version:
+    type: integer
+    const: 1
+    description: |
+      Bumps when this schema's shape changes. Constant `1` for the V1 schema.
+      Incremented in the same PR that changes the shape, with the writer
+      RESULT_SCHEMA_VERSION constant (harness/run_experiment.py) updated to
+      match.
+
+  experiment_id:
+    type: string
+    pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}_.+_.+_.+$"
+    description: |
+      Directory name of the experiment under experiments/, formed as
+      `<YYYY-MM-DD>_<plugin_tag>_<task_id>_<run_id>` (UTC date at runner
+      invocation; idempotency is on the trailing triple, not the date).
+
+  plugin_tag:
+    type: string
+    minLength: 1
+    description: |
+      Human-supplied label for the plugin version under test (e.g. `v0.1.0`).
+      Need not match a git ref — useful for pre-tag development.
+
+  plugin_path:
+    type: string
+    description: |
+      Absolute filesystem path the runner passed to `claude --plugin-dir`.
+      For URL+ref mode this is the cached worktree path; for --plugin-path
+      mode this is the user-supplied path.
+
+  plugin_repo:
+    type: ["string", "null"]
+    description: |
+      Plugin repo URL when sourced via --plugin-repo + --plugin-ref; null
+      when sourced via --plugin-path.
+
+  plugin_ref:
+    type: ["string", "null"]
+    description: |
+      Git ref (tag/branch/SHA) the runner asked git to check out. Null in
+      --plugin-path mode. Note: a branch ref can drift; the canonical pin
+      is `plugin_sha` (per ADR-0001).
+
+  plugin_sha:
+    type: ["string", "null"]
+    pattern: "^[a-f0-9]{40}$"
+    description: |
+      40-char commit SHA the plugin worktree was at when the agent started.
+      Null if `plugin_path` is not a git working tree (the runner logs a
+      warning in that case; reproducibility from this result then requires
+      out-of-band knowledge of what was at the path).
+
+  task_id:
+    type: string
+    description: Subdirectory name under tasks/instances/.
+
+  run_id:
+    type: string
+    description: |
+      Caller-supplied run identifier (e.g. `baseline-1`). Idempotency is
+      enforced on the (plugin_tag, task_id, run_id) triple regardless of
+      date.
+
+  base_repo:
+    type: string
+    description: HTTPS URL of the task's source repo (from task.yaml).
+
+  base_sha:
+    type: string
+    pattern: "^[a-f0-9]{40}$"
+    description: 40-char commit SHA pinned in task.yaml.
+
+  # --- Task configuration echoed for self-contained results --------------
+
+  scope_files_declared:
+    type: array
+    items: { type: string }
+    description: |
+      Echo of task.yaml's `scope_files` glob list at execution time.
+      Recorded so a result can be re-scored without re-reading the task
+      definition (which may have moved).
+
+  available_tools:
+    type: ["array", "null"]
+    items: { type: string }
+    description: |
+      Echo of task.yaml's `available_tools` list, or null if the task didn't
+      declare one (in which case the runner used --dangerously-skip-permissions).
+
+  max_turns:
+    type: integer
+    minimum: 1
+    description: Hard cap passed to `claude --max-turns`.
+
+  seed:
+    type: ["string", "null"]
+    description: |
+      BENCHMARK_SEED env var passed to the agent, when set. Future
+      sim-metric tasks pin this for determinism.
+
+  # --- Timing + status ----------------------------------------------------
+
+  started_at:
+    type: string
+    format: date-time
+    description: ISO-8601 UTC timestamp set when the partial is written.
+
+  completed_at:
+    type: ["string", "null"]
+    description: |
+      ISO-8601 UTC. Null on the partial; non-null whenever the runner exits
+      cleanly (regardless of agent status). See status-conditional rules.
+
+  runtime_s:
+    type: ["number", "null"]
+    minimum: 0
+    description: |
+      Wall-clock seconds from agent invocation to completion. Null on the
+      partial; non-null in any terminal status.
+
+  exit_code:
+    type: ["integer", "null"]
+    description: |
+      `claude -p` subprocess exit code (Popen.returncode semantics). -1
+      indicates timeout-killed-by-runner. Null on the partial.
+
+  status:
+    type: string
+    enum: [success, error, timeout, incomplete]
+    description: |
+      Terminal status of the experiment.
+      - success: exit_code==0; agent ran cleanly. error MUST be null.
+      - error: claude exited non-zero, OR a runner-level exception occurred.
+        error MUST be a populated object.
+      - timeout: claude exceeded task.timeout_s; subprocess killed.
+        error MUST describe the timeout.
+      - incomplete: written by the partial-result preamble; only seen on disk
+        if the runner's Python crashed before the agent invocation finished.
+
+  error:
+    oneOf:
+      - type: "null"
+      - type: object
+        additionalProperties: false
+        required: [type, message]
+        properties:
+          type:
+            type: string
+            description: Exception class name or runner-defined error category.
+          message:
+            type: string
+    description: Null on success and on the unmodified partial; populated otherwise.
+
+  # --- Output artifacts (sidecars referenced, content not in result.json) -
+
+  files_modified:
+    type: array
+    items: { type: string }
+    description: |
+      Paths the agent touched, as reported by `git diff --cached --name-only`
+      against base_sha. Includes new and deleted files. Empty array on the
+      partial; populated after capture_diff().
+
+  transcript_bytes:
+    type: integer
+    minimum: 0
+    description: |
+      Size of the agent's stdout in bytes. The full stdout is rendered to
+      transcript.md as a sidecar; this field is the cost proxy.
+
+  # --- Scoring (per FR3 of docs/spec.md) ---------------------------------
+
+  scoring:
+    type: object
+    additionalProperties: true   # forward-compatible: future scorers append
+    properties:
+      scope_check:
+        type: object
+        additionalProperties: false
+        required: [out_of_scope_count, out_of_scope_paths]
+        properties:
+          out_of_scope_count:
+            type: integer
+            minimum: 0
+          out_of_scope_paths:
+            type: array
+            items: { type: string }
+        description: |
+          Always present after capture_diff() runs. Computed by
+          harness.scope_check.compute_scope_violations.
+      rubric:
+        oneOf:
+          - $ref: "#/definitions/rubricSuccess"
+          - $ref: "#/definitions/rubricFailure"
+        description: |
+          Present only when task.verification_method ∈ {rubric, hybrid} and
+          a rubric_path is set. One of two shapes: success (judge produced
+          aggregated trials) or failure (judge subprocess errored — the
+          experiment is preserved for forensics).
+    description: |
+      Container for verification scorers. Empty {} on the partial. After
+      diff capture: scope_check is always populated; rubric is populated for
+      rubric/hybrid tasks. Future fields: test_pass (T3.2), sim_metric
+      (Phase 5+). See docs/result-json-reference.md "Planned" section.
+
+  # --- Optional, only present when retained for debugging ----------------
+
+  scratch_dir:
+    type: string
+    description: |
+      Filesystem path of the task worktree when retained on failure
+      (per ADR-0002). Absent when the runner pruned the worktree (success).
+
+# ---------------------------------------------------------------------------
+# Status-conditional rules. Partials and finals share one schema; the rules
+# below tighten requirements as the status advances.
+# ---------------------------------------------------------------------------
+allOf:
+  - if:
+      properties:
+        status: { const: success }
+      required: [status]
+    then:
+      properties:
+        error: { type: "null" }
+        completed_at: { type: string }
+        runtime_s: { type: number, minimum: 0 }
+        exit_code: { type: integer }
+
+  - if:
+      properties:
+        status: { enum: [error, timeout] }
+      required: [status]
+    then:
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [type, message]
+          properties:
+            type: { type: string }
+            message: { type: string }
+        completed_at: { type: string }
+        runtime_s: { type: number, minimum: 0 }
+        exit_code: { type: integer }
+
+# Note: status="incomplete" intentionally has no extra constraints — it's the
+# crash-recovery sentinel. completed_at, runtime_s, exit_code may be null;
+# files_modified may be []; scoring may be {}.
+
+# ---------------------------------------------------------------------------
+# Reusable shapes
+# ---------------------------------------------------------------------------
+definitions:
+
+  rubricSuccess:
+    type: object
+    additionalProperties: false
+    required: [n_trials, per_trial, mean, stdev, overall_mean, overall_stdev]
+    properties:
+      n_trials:
+        type: integer
+        minimum: 1
+      per_trial:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [scores, overall_recomputed, rationale]
+          properties:
+            scores:
+              type: object
+              additionalProperties: { type: number }
+              minProperties: 1
+            overall_recomputed: { type: number }
+            overall_judge_reported:
+              type: ["number", "null"]
+            rationale: { type: string }
+      mean:
+        type: object
+        additionalProperties: { type: number }
+        minProperties: 1
+      stdev:
+        type: object
+        additionalProperties: { type: number, minimum: 0 }
+        minProperties: 1
+      overall_mean: { type: number }
+      overall_stdev:
+        type: number
+        minimum: 0
+
+  rubricFailure:
+    type: object
+    additionalProperties: false
+    required: [error]
+    properties:
+      error:
+        type: object
+        additionalProperties: false
+        required: [type, message]
+        properties:
+          type: { type: string }
+          message: { type: string }
