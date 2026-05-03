@@ -1,197 +1,227 @@
-# `result.json` reference
+# `result.json` field reference
 
-> **Canonical** — this is the source of truth for the field shape and semantics of every `experiments/<...>/result.json`. The machine-verifiable counterpart is [`harness/schemas/result.schema.yaml`](../harness/schemas/result.schema.yaml). The decision to consolidate is recorded in [ADR-0008](decisions/0008-canonical-result-json-schema.md).
+> **What this document is.** The human-readable canonical reference for
+> `experiments/<...>/result.json`. The machine-readable counterpart is
+> [`harness/schemas/result.schema.yaml`](../harness/schemas/result.schema.yaml),
+> which is validated on every write inside
+> [`harness/run_experiment.py:write_result()`](../harness/run_experiment.py).
+>
+> **Scope.** What each field means, when it's required, when it's nullable, and
+> which module writes it. **Not** the field shapes — those are in the schema.
+>
+> **Decision context.** [ADR-0008](decisions/0008-result-json-schema-and-reference.md)
+> records *why* this canonical pair exists.
+>
+> **Last updated:** 2026-05-03.
 
-## How to read this
+---
 
-Every experiment writes one `result.json` under `experiments/<YYYY-MM-DD>_<plugin_tag>_<task_id>_<run_id>/`. The file goes through up to two states on disk:
+## Lifecycle
 
-| State | When written | `status` field |
-|---|---|---|
-| **Partial** | Before the agent is invoked, by `run_experiment.py:run()`. | `incomplete` |
-| **Final** | After the agent returns (or times out, or the runner catches an exception). | `success` \| `error` \| `timeout` |
+`status` traces the experiment's progress through four states:
 
-The schema enforces this state machine: identification fields are required in **both** states; timing/status fields (`completed_at`, `runtime_s`, `exit_code`) may be null in the partial but **must** be non-null in any terminal state. `error` is null on `success` and on the unmodified partial; populated otherwise.
+```
+                          ┌─────────────┐
+   write_result() called  │ incomplete  │   first persisted record
+   before the agent runs  └──────┬──────┘   (set in run() step 5)
+                                 │
+                                 │  agent subprocess returns
+                                 ▼
+                  ┌──────────────┼──────────────┐
+                  ▼              ▼              ▼
+              ┌────────┐   ┌─────────┐   ┌─────────┐
+              │success │   │  error  │   │ timeout │
+              └────────┘   └─────────┘   └─────────┘
+              normal exit  agent crash   wall-clock
+                           OR runner     limit hit
+                           crash
+```
 
-`write_result()` validates against the schema before persisting (per [ADR-0008](decisions/0008-canonical-result-json-schema.md)). On schema failure, the rejected payload is preserved at `<exp_dir>/result.invalid.json` for forensics and `ResultSchemaError` is raised.
+**Invariants per state** (enforced by schema; see
+[`harness/schemas/result.schema.yaml`](../harness/schemas/result.schema.yaml)):
+
+| `status` | `error` | `scratch_dir` | `scoring` | `completed_at` |
+|---|---|---|---|---|
+| `incomplete` | null | required | `{}` | null |
+| `success`    | null | **forbidden** | `scope_check` required | required |
+| `error`      | required | required | scope_check usually present | required |
+| `timeout`    | required | required | scope_check usually present | required |
+
+The `scratch_dir` rule (refinement A in ADR-0008) means the worktree path is
+recorded from the very first persisted record. If the runner crashes between
+the partial-write and `add_worktree`, the file on disk honestly says where
+the worktree *would* have been.
+
+---
+
+## Plugin sourcing
+
+Two modes, distinguished by the *value* of `plugin_repo`/`plugin_ref`
+(both null = local mode; both non-null = clone-and-ref mode):
+
+| Mode | `plugin_path` | `plugin_repo` | `plugin_ref` |
+|---|---|---|---|
+| Local (`--plugin-path`) | path string | `null` | `null` |
+| URL+ref (`--plugin-repo` + `--plugin-ref`) | path string (the materialized worktree) | URL string | git ref string |
+
+In URL+ref mode the runner clones to `~/.cache/robotics-skills-benchmark/plugins/`
+and reassigns `plugin_path` to the materialized worktree, so `plugin_path` is
+always a string regardless of mode. The `oneOf` constraint in the schema
+inspects values, not key presence (refinement B in ADR-0008).
+
+The canonical reproducibility key is **`plugin_sha`**, not `plugin_tag` (a
+human label) or `plugin_ref` (which can move). See
+[ADR-0001](decisions/0001-three-surface-repo-topology.md).
+
+---
 
 ## Field reference
 
-Columns: **Field** | **Type** (JSON Schema notation; `T \| null` = nullable) | **When present** | **Writer** (module:function) | **Semantics**.
+> **Reading guide.** "Required when" describes when the field must be
+> present in the persisted record. "Nullable when" describes when its value
+> may be `null`. Writer paths are relative to repo root; line numbers move
+> with the codebase but the function name stays stable.
 
-### Identification (always required)
+### Identity & reproducibility
 
-| Field | Type | When | Writer | Semantics |
-|---|---|---|---|---|
-| `schema_version` | `integer (const: 1)` | Always | `run_experiment.py:run()` partial | Bumps on any shape change. Schema and `RESULT_SCHEMA_VERSION` constant move together. |
-| `experiment_id` | `string` | Always | `run_experiment.py:run()` partial | Directory name `<YYYY-MM-DD>_<plugin_tag>_<task_id>_<run_id>` (UTC). |
-| `plugin_tag` | `string` | Always | `run_experiment.py:run()` partial | Caller-supplied label (e.g., `v0.1.0`). Need not match a git ref. |
-| `plugin_path` | `string` | Always | `run_experiment.py:run()` partial | Absolute path passed to `claude --plugin-dir`. |
-| `plugin_repo` | `string \| null` | Always (null in `--plugin-path` mode) | `run_experiment.py:run()` partial | URL when sourced via `--plugin-repo + --plugin-ref`. |
-| `plugin_ref` | `string \| null` | Always (null in `--plugin-path` mode) | `run_experiment.py:run()` partial | Git ref the runner asked git to check out. Branches drift; `plugin_sha` is canonical. |
-| `plugin_sha` | `string \| null` (`^[a-f0-9]{40}$`) | Always (null when `plugin_path` is not a git working tree) | `run_experiment.py:resolve_git_sha()` | The reproducibility key per [ADR-0001](decisions/0001-three-surface-repo-topology.md). |
-| `task_id` | `string` | Always | `run_experiment.py:run()` partial | Subdirectory name under `tasks/instances/`. |
-| `run_id` | `string` | Always | `run_experiment.py:run()` partial | Caller-supplied (e.g., `baseline-1`). Idempotency key with `(plugin_tag, task_id, run_id)`. |
-| `base_repo` | `string` | Always | `run_experiment.py:run()` partial | HTTPS URL from `task.yaml`. |
-| `base_sha` | `string` (40 hex) | Always | `run_experiment.py:run()` partial | 40-char commit SHA pinned in `task.yaml`. |
+| Field | Type | Required when | Nullable when | Writer | Notes |
+|---|---|---|---|---|---|
+| `schema_version` | int (`= 1`) | always | never | `run_experiment.py:run()` (partial dict) | Bumped only on incompatible shape changes. Part of the reproducibility tuple per ADR-0001. |
+| `experiment_id` | string | always | never | `run_experiment.py:run()` | Self-referential: matches the parent dir basename `<YYYY-MM-DD>_<plugin_tag>_<task_id>_<run_id>`. |
+| `plugin_tag` | string | always | never | `run_experiment.py:run()` | Human-supplied label (e.g., `v0.1.0`). Need not match `plugin_ref`. Not canonical for reproducibility. |
+| `plugin_path` | string | always | never | `run_experiment.py:run()` | Local FS path passed to `claude --plugin-dir`. In URL+ref mode, the materialized cache worktree. |
+| `plugin_repo` | string \| null | always | local mode | `run_experiment.py:run()` | URL of plugin repo when URL+ref mode used. Pairs with `plugin_ref`. |
+| `plugin_ref` | string \| null | always | local mode | `run_experiment.py:run()` | Git ref (tag/branch/SHA) requested at materialization time. |
+| `plugin_sha` | string (40 hex) \| null | always | when `plugin_path` is not a git working tree | `run_experiment.py:resolve_git_sha()` | **Canonical reproducibility key.** Resolved at run time. Runner emits a stderr warning when null. |
+| `task_id` | string | always | never | `run_experiment.py:run()` | Matches `tasks/instances/<id>/`. |
+| `run_id` | string | always | never | `run_experiment.py:run()` | Distinguishes repeated runs (e.g., `baseline-1`, `baseline-2`). |
+| `base_repo` | string (URL) | always | never | `run_experiment.py:run()` | Copied from `task.yaml` at run time. |
+| `base_sha` | string (40 hex) | always | never | `run_experiment.py:run()` | Pinned commit the task worktree was checked out at. |
 
-### Task configuration echoed for self-contained results
+### Run-time configuration snapshot
 
-| Field | Type | When | Writer | Semantics |
-|---|---|---|---|---|
-| `scope_files_declared` | `array<string>` | Always | `run_experiment.py:run()` partial | Echo of `task.scope_files`. Re-scoring works without re-reading `task.yaml`. |
-| `available_tools` | `array<string> \| null` | Always (null when task didn't declare one) | `run_experiment.py:run()` partial | Echo of `task.available_tools`; null path uses `--dangerously-skip-permissions`. |
-| `max_turns` | `integer (≥1)` | Always | `run_experiment.py:run()` partial | Hard cap passed to `claude --max-turns`. |
-| `seed` | `string \| null` | Always (null when task is not seed-required) | `run_experiment.py:run()` partial | `BENCHMARK_SEED` env var passed to the agent. |
+| Field | Type | Required when | Nullable when | Writer | Notes |
+|---|---|---|---|---|---|
+| `scope_files_declared` | list[string] | always | never | `run_experiment.py:run()` | Snapshot of `task.yaml` `scope_files` at run time. The `_declared` suffix distinguishes from `out_of_scope_paths` (the *derived* violation list). |
+| `available_tools` | list[string] \| null | always | when task didn't declare a list | `run_experiment.py:run()` | Null → runner fell back to `--dangerously-skip-permissions` and emitted a warning. |
+| `max_turns` | int (≥1) | always | never | `run_experiment.py:run()` | The `--max-turns` ceiling per ADR-0006. |
+| `seed` | string \| null | always | when not set | `run_experiment.py:run()` | `BENCHMARK_SEED` env var. Used by sim-metric tasks (Phase 4+). |
 
-### Timing and status
+### Lifecycle / outcome
 
-| Field | Type | When | Writer | Semantics |
-|---|---|---|---|---|
-| `started_at` | `string` (ISO-8601 UTC) | Always | `run_experiment.py:run()` partial | Set when partial is written. |
-| `completed_at` | `string \| null` | Null on partial; non-null in any terminal status | `run_experiment.py:run_agent()` → `run()` final write | ISO-8601 UTC. |
-| `runtime_s` | `number \| null (≥0)` | Null on partial; non-null in any terminal status | `run_experiment.py:run_agent()` | Wall-clock seconds, agent invocation → completion. |
-| `exit_code` | `integer \| null` | Null on partial; non-null in any terminal status | `run_experiment.py:run_agent()` | `Popen.returncode` semantics. `-1` = runner-killed (timeout). |
-| `status` | `enum [success, error, timeout, incomplete]` | Always | `run_experiment.py:run_agent()` → `run()` exception handler | See state machine above. |
-| `error` | `null \| {type: string, message: string}` | Always; null when `status==success`; non-null when `status∈{error, timeout}` | `run_experiment.py:run_agent()` / `run()` exception handler | Conditional shape enforced by schema. |
+| Field | Type | Required when | Nullable when | Writer | Notes |
+|---|---|---|---|---|---|
+| `status` | enum | always | never | `run_experiment.py:run()` (initial=incomplete; updated post-agent) | One of `incomplete`, `success`, `error`, `timeout`. See lifecycle diagram above. |
+| `started_at` | string (ISO 8601) | always | never | `run_experiment.py:now_utc_iso()` | Initially the partial-write time; overwritten with the agent subprocess's actual start time once it runs. |
+| `completed_at` | string \| null | always | when `status=incomplete` | `run_experiment.py:run_agent()` | UTC ISO 8601. Set when agent finishes (success/error/timeout) or runner crashes. |
+| `runtime_s` | number \| null | always | when `status=incomplete` | `run_experiment.py:run_agent()` | Wall-clock seconds, agent start to agent end (or crash point). |
+| `exit_code` | int \| null | always | when `status=incomplete` | `run_experiment.py:run_agent()` | Subprocess exit. `-1` indicates runner-aborted (timeout or missing binary). |
+| `error` | object \| null | always | when `status ∈ {incomplete, success}` | `run_experiment.py:run_agent()` or `run()` except handler | Shape: `{type: string, message: string}`. `type` examples: `missing-binary`, `non-zero-exit`, `timeout`, exception class names. |
+| `files_modified` | list[string] | always | never (empty list when no edits) | `run_experiment.py:capture_diff()` | From `git diff --cached --name-only base_sha` after `git add -A`. Includes untracked files. |
+| `transcript_bytes` | int (≥0) | always | never | `run_experiment.py:run_agent()` | `len(agent_stdout)`. The actual transcript is rendered to `transcript.md` alongside. |
 
-### Output artifacts
+### Top-level automated metrics (per ADR-0003)
 
-| Field | Type | When | Writer | Semantics |
-|---|---|---|---|---|
-| `files_modified` | `array<string>` | Always (`[]` on partial) | `run_experiment.py:capture_diff()` | Output of `git diff --cached --name-only` vs `base_sha`. Includes new and deleted files. |
-| `transcript_bytes` | `integer (≥0)` | Always (`0` on partial) | `run_experiment.py:run()` post-agent | Size of agent stdout in bytes. Full content lives in sidecar `transcript.md`. |
+| Field | Type | Required when | Nullable when | Writer | Notes |
+|---|---|---|---|---|---|
+| `hook_blocks` | int (≥0) | always | never | `run_experiment.py:run()` (partial=0; populated post-agent) | Count of `pre-commit-scope-check` hook rejections. **Always 0 in Phase 1** — the hook lands at task T2.3 and will populate this from hook output thereafter. Valid 0-state today, not "unknown". |
+| `judge_calls` | int (≥0) | always | never | `run_experiment.py:compute_scoring()` (=`n_trials` when rubric ran, else 0) | Number of LLM-judge subprocess invocations. Surfaced at top level for cost-tracking analytics in Phase 5+. |
+
+### Scratch / cleanup
+
+| Field | Type | Required when | Nullable when | Writer | Notes |
+|---|---|---|---|---|---|
+| `scratch_dir` | string | `status ∈ {incomplete, error, timeout}` | never (when present) | `run_experiment.py:run()` (partial dict) | FS path of the task worktree. Set from the very first partial-write (refinement A). **Forbidden when `status=success`** — worktree pruned per ADR-0002. |
 
 ### Scoring
 
-The `scoring` object is always present (empty `{}` on the partial). Its sub-fields are appended by the scorers as they run. New scorer types add new sub-fields with each schema-version bump.
+`scoring` is an object with `additionalProperties: true` so future scorers
+(Phase 3+ `score_tests.py`, Phase 4+ `sim_metric`, etc.) can add fields
+without a schema bump. Today, two sub-keys are defined:
 
-| Field | Type | When | Writer | Semantics |
-|---|---|---|---|---|
-| `scoring` | `object` | Always (`{}` on partial) | `run_experiment.py:compute_scoring()` | Container; `additionalProperties: true` for forward compatibility. |
-| `scoring.scope_check` | `{out_of_scope_count: int≥0, out_of_scope_paths: array<string>}` | Always present after `capture_diff()` | `harness.scope_check.compute_scope_violations` | Files the agent touched outside `scope_files_declared`. Reliability criterion C4. |
-| `scoring.rubric` | `oneOf(success, failure)` (see below) | When `task.verification_method ∈ {rubric, hybrid}` and a rubric is set | `harness.score_rubric.score_rubric` | Aggregated N-trial LLM judge per [ADR-0003](decisions/0003-hybrid-scoring.md). |
+#### `scoring.scope_check`
+Always present once `status != incomplete`. Computed by
+[`harness/scope_check.py:compute_scope_violations()`](../harness/scope_check.py).
 
-**`scoring.rubric` success branch:**
-
-| Sub-field | Type | Semantics |
+| Field | Type | Notes |
 |---|---|---|
-| `n_trials` | `integer (≥1)` | Number of judge invocations. V1 default: 3. |
-| `per_trial[]` | `array<{scores, overall_recomputed, overall_judge_reported, rationale}>` | One entry per judge call; preserved for audit. |
-| `per_trial[].scores` | `{dim: number}` | Judge's per-dimension score (rubric defines dimensions). |
-| `per_trial[].overall_recomputed` | `number` | Mean of `scores` values. **Aggregated, not the judge's claim.** |
-| `per_trial[].overall_judge_reported` | `number \| null` | The judge's `overall` field; preserved for audit; **not** used in aggregation. |
-| `per_trial[].rationale` | `string` | The judge's free-form justification. |
-| `mean` | `{dim: number}` | Per-dimension arithmetic mean across trials. |
-| `stdev` | `{dim: number (≥0)}` | Per-dimension sample stdev (`statistics.stdev`). N=1 → 0.0 by convention. |
-| `overall_mean` | `number` | Mean of `per_trial[].overall_recomputed`. |
-| `overall_stdev` | `number (≥0)` | Sample stdev across trials. The noise floor for plugin-version comparisons. |
+| `out_of_scope_file_count` | int (≥0) | Number of paths the agent touched that don't match any pattern in `scope_files`. |
+| `out_of_scope_paths` | list[string] | Sorted, deduplicated list of those paths. |
 
-**`scoring.rubric` failure branch** (when the judge subprocess fails):
+#### `scoring.rubric_scores`
+Present iff the task's `verification_method ∈ {rubric, hybrid}`. Two
+shapes (validated via `oneOf`):
 
-| Sub-field | Type | Semantics |
+**Success shape** — `score_rubric()` completed all trials:
+
+| Field | Type | Notes |
 |---|---|---|
-| `error.type` | `string` | Exception class (e.g., `JudgeInvocationError`). |
-| `error.message` | `string` | Detail string. |
+| `n_trials` | int (≥1) | Number of judge trials run. Default 3 per ADR-0003. |
+| `per_trial` | list[object] | One entry per trial — see "per-trial entry" below. |
+| `mean` | dict[string, number] | Per-dimension arithmetic mean across trials. |
+| `stdev` | dict[string, number] | Per-dimension sample stdev (N−1 denominator). 0.0 for single-trial runs. |
+| `overall_mean` | number (0–3) | Mean of per-trial recomputed overalls. |
+| `overall_stdev` | number (≥0) | Sample stdev of per-trial recomputed overalls. |
 
-### Optional, only present when retained for debugging
+**Per-trial entry shape**:
 
-| Field | Type | When | Writer | Semantics |
-|---|---|---|---|---|
-| `scratch_dir` | `string` | Present on `status ∈ {error, timeout, incomplete}` when worktree was created and not pruned (per [ADR-0002](decisions/0002-git-worktrees-for-parallel-runs.md)) | `run_experiment.py:run()` finally clause | Filesystem path of the retained task worktree. Absent on success. |
+| Field | Type | Notes |
+|---|---|---|
+| `scores` | dict[string, int] | Dimension name → integer 0–3 per the rubric grade scale. |
+| `overall_recomputed` | number (0–3) | Mean of `scores` values, computed by us — not trusted from the judge. |
+| `overall_judge_reported` | number \| null | The judge's claimed overall. Preserved for audit; **not** aggregated. Spotting judges that disagree with their own arithmetic is one signal of judge drift. |
+| `rationale` | string | 2-4 sentences from the judge citing strengths/weaknesses of the deliverable. |
 
-## Examples
+**Failure shape** — judge subprocess errored before completing all trials.
+The runner records this rather than raising, so transcript + diff +
+scope_check are still on disk for forensics:
 
-### Minimal valid partial
+| Field | Type | Notes |
+|---|---|---|
+| `error` | `{type: string, message: string}` | E.g., `JudgeInvocationError`, `FileNotFoundError`. |
 
-```json
-{
-  "schema_version": 1,
-  "experiment_id": "2026-05-03_v0.1.0_diffbot-experiment-design_baseline-1",
-  "plugin_tag": "v0.1.0",
-  "plugin_path": "/home/u/.cache/.../v0.1.0",
-  "plugin_repo": null,
-  "plugin_ref": null,
-  "plugin_sha": null,
-  "task_id": "diffbot-experiment-design",
-  "run_id": "baseline-1",
-  "base_repo": "https://github.com/ros-controls/ros2_control_demos",
-  "base_sha": "c555233658e8c0794f9bb6e1ea4059ca84bcd503",
-  "scope_files_declared": ["EXPERIMENT.md"],
-  "available_tools": ["Read", "Glob", "Grep", "Write", "Edit"],
-  "max_turns": 50,
-  "seed": null,
-  "started_at": "2026-05-03T12:00:00Z",
-  "completed_at": null,
-  "runtime_s": null,
-  "exit_code": null,
-  "status": "incomplete",
-  "error": null,
-  "files_modified": [],
-  "transcript_bytes": 0,
-  "scoring": {}
-}
-```
+---
 
-### Minimal valid `success` (rubric task)
+## Future fields
 
-Same as above with these overrides:
+These are declared in [`docs/reliability-criteria.md`](reliability-criteria.md)
+as goals but are **not** in the schema yet. Their shapes will be locked when
+the code that writes them lands.
 
-```json
-{
-  "completed_at": "2026-05-03T12:30:00Z",
-  "runtime_s": 1800.5,
-  "exit_code": 0,
-  "status": "success",
-  "files_modified": ["EXPERIMENT.md"],
-  "transcript_bytes": 12345,
-  "scoring": {
-    "scope_check": {"out_of_scope_count": 0, "out_of_scope_paths": []},
-    "rubric": {
-      "n_trials": 3,
-      "per_trial": [
-        {"scores": {"hypothesis": 2, "signals": 3}, "overall_recomputed": 2.5,
-         "overall_judge_reported": 2.5, "rationale": "..."}
-      ],
-      "mean": {"hypothesis": 2.0, "signals": 3.0},
-      "stdev": {"hypothesis": 0.0, "signals": 0.0},
-      "overall_mean": 2.5,
-      "overall_stdev": 0.0
-    }
-  }
-}
-```
-
-### Minimal valid `error`
-
-```json
-{
-  "status": "error",
-  "completed_at": "2026-05-03T12:05:00Z",
-  "runtime_s": 300.0,
-  "exit_code": 1,
-  "error": {"type": "non-zero-exit", "message": "claude exited with code 1"},
-  "scratch_dir": "/tmp/exp-scratch/v0.1.0__diffbot-experiment-design__baseline-1"
-}
-```
-
-## Planned (not yet in schema)
-
-These fields are referenced in [`docs/reliability-criteria.md`](reliability-criteria.md) but are **not** part of schema v1. Each lands in the PR that implements the producing feature, with a schema version bump (per [ADR-0008](decisions/0008-canonical-result-json-schema.md)). The canonical task entries that will add them:
-
-| Planned field | Reliability criterion | Adding task | Notes |
+| Field | Phase | Writer (when implemented) | Notes |
 |---|---|---|---|
-| `skills_invoked` | C1 (auditability) | Phase 2 (when transcript-extraction lands; not yet a numbered task) | List of plugin skills the agent loaded during the run. Source: `claude -p` output stream. |
-| `hook_blocks` | C4 (scope-discipline) | T2.3 (`pre-commit-scope-check` hook in plugin) | Count of out-of-scope edit attempts the hook rejected. Source: hook stderr or transcript. |
-| `static_check` | C2 (verifiability) | Phase 3+ (refactor-task scoring) | Result of language-server or formatter checks for refactor tasks. |
-| `judge_calls` | Cost proxy | Optional; today inferable from `scoring.rubric.n_trials` | Total judge subprocess invocations including retries. |
+| `skills_invoked` | TBD | post-processor over `transcript.md` | List of plugin skills that fired during the run (grep'd from transcript). |
+| `scoring.test_pass` | Phase 3 | `harness/score_tests.py` (T3.2) | SWE-bench-style FAIL_TO_PASS / PASS_TO_PASS results from per-task Docker container. Shape: `{fail_to_pass_passing, pass_to_pass_passing, fail_to_pass_total, pass_to_pass_total, resolved: bool}`. |
+| `scoring.sim_metric` | Phase 4 | TBD | Numeric metric parsed from rosbag/log; with `seed_required: true`, success rate over N trials. |
+| `scoring.static_check` | TBD | TBD | Refactor-task static analysis results. |
 
-## Related documents
+These can land without a schema bump (`scoring.additionalProperties: true`).
+When they do, this reference doc gets a row and the schema gets an explicit
+property definition.
 
-- [ADR-0001](decisions/0001-three-surface-repo-topology.md) — reproducibility tuple, why `plugin_sha` is the canonical pin.
-- [ADR-0002](decisions/0002-git-worktrees-for-parallel-runs.md) — `scratch_dir` retention policy on failure.
-- [ADR-0003](decisions/0003-hybrid-scoring.md) — N=3 trials with mean ± stdev; recompute-overall-from-scores convention.
-- [ADR-0006](decisions/0006-headless-claude-code-for-runner-and-judge.md) — runner CLI flags and `--bare` for the judge.
-- [ADR-0008](decisions/0008-canonical-result-json-schema.md) — this consolidation.
-- [`docs/spec.md`](spec.md) — FR3 references this file for field shape; the spec keeps narrative about *which* metrics matter and *why*.
-- [`docs/reliability-criteria.md`](reliability-criteria.md) — maps the five reliability criteria to specific result.json fields.
+---
+
+## Reliability criteria → field mapping
+
+The criterion → field mapping is the canonical role of
+[`docs/reliability-criteria.md`](reliability-criteria.md). For *what* each
+field captures and *why* it satisfies a particular reliability criterion,
+see that doc. For *shape* and *types*, see this doc and the schema.
+
+---
+
+## Validation
+
+```bash
+# Validate every result.json on disk
+python3 harness/validate_result.py --all
+
+# Validate one specific result
+python3 harness/validate_result.py experiments/<dir>/result.json
+```
+
+Validation also runs **inline** inside
+[`harness/run_experiment.py:write_result()`](../harness/run_experiment.py).
+Any malformed payload raises `ResultValidationError` and never lands on disk.
+If even the runner's error-state result fails validation, the runner falls
+back to writing `result.invalid.json` so forensics aren't lost.
