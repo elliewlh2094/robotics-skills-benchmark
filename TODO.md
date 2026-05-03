@@ -14,13 +14,15 @@ Lightweight operational pointer. Ephemeral on purpose — the durable references
 
 ## ▶ Where to resume
 
-**T1.4 — implement scope-check + rubric scorer.** Full task definition at [`docs/v1-tasks.md#task-t14-implement-scope-check-and-rubric-scorer`](docs/v1-tasks.md).
+**T1.5 — run V1 baseline (3 trials at unmodified fork).** Full task definition at [`docs/v1-tasks.md`](docs/v1-tasks.md).
 
-Two modules:
-- `harness/scope_check.py` — pure function over `(diff, scope_files)` → `{out_of_scope_count, out_of_scope_paths}`.
-- `harness/score_rubric.py` — subprocess `claude -p --output-format json --json-schema <schema>` (no plugin loaded) per ADR-0006; N=3 trials; returns `{per_trial, mean, stdev}`.
+Prereqs done: scope-check + rubric scorer landed in T1.4 (scoring section of `result.json` now populated end-to-end via `harness/scope_check.py` and `harness/score_rubric.py`; the real `claude --bare --json-schema` judge subprocess is exercised here for the first time).
 
-After both modules exist, extend `harness/run_experiment.py` to call them inline and merge into `result.json.scoring`.
+Steps:
+1. Tag `elliewlh2094/robotics-agent-skills` HEAD as `v0.1.0` in the plugin repo.
+2. Run `harness/run_experiment.py` against `diffbot-experiment-design` at that tag, three times (`baseline-1`, `baseline-2`, `baseline-3`).
+3. Sanity-check each `result.json` and that an `EXPERIMENT.md` was actually produced.
+4. Compute pooled per-dimension stdev across the three runs and document in `analysis/baseline-v0.1.0.md`. **This stdev is the noise floor against which Phase 2's plugin delta is judged.**
 
 ---
 
@@ -28,7 +30,7 @@ After both modules exist, extend `harness/run_experiment.py` to call them inline
 
 | Phase | Status | Tasks done | Tasks pending |
 |---|---|---|---|
-| Phase 1 (Foundation) | 🟡 in progress | T1.1, T1.2, T1.3 | T1.4, T1.5 |
+| Phase 1 (Foundation) | 🟡 in progress | T1.1, T1.2, T1.3, T1.4 | T1.5 |
 | Phase 2 (First plugin iteration) | ⏳ blocked by Checkpoint A | — | T2.1–T2.4 |
 | Phase 3 (TDD + debugging) | ⏳ post-V1 | — | T3.1–T3.5 |
 | Phase 4 (Spec + planning) | ⏳ post-V1 | — | T4.1–T4.4 |
