@@ -29,7 +29,7 @@ Goal #3 is the heart of V1: it proves the feedback loop closes, not just that th
 
 - **One activity:** experiment design (the activity where general-purpose plugins are weakest, per the spec).
 - **One task instance:** `diffbot-experiment-design` against `ros-controls/ros2_control_demos@humble` (`example_2`, DiffBot mock-hardware kinematic-integration invariant). See ADR-0007.
-- **One verification method:** rubric (LLM judge with N=3 trials, mean+stdev) plus automated metrics (`out_of_scope_file_count`, `files_modified`, runtime).
+- **One verification method:** rubric (LLM judge with N=3 trials, mean+stdev) plus automated metrics (`scoring.scope_check.out_of_scope_file_count`, `files_modified`, `runtime_s`). For full field shapes see [`result-json-reference.md`](result-json-reference.md).
 - **Two plugin versions:** `v0.1.0` (unmodified fork as baseline) and `v0.2.0` (one new skill + one new hook).
 - **One sim engine field value:** `none` (mock hardware via ros2_control). Gazebo is reinstated as the baseline from Phase 3 onward — see ADR-0007.
 
@@ -101,7 +101,7 @@ Adds rubric-typed spec/planning tasks. Reuses `score_rubric.py`. Final V1-select
 
 V1 is *complete* (Checkpoint B passed) when all of these hold:
 
-- [ ] `result.json` for `(v0.1.0, diffbot-experiment-design, baseline-1)` exists, validates against the canonical schema (per [ADR-0008](decisions/0008-canonical-result-json-schema.md); see [`docs/result-json-reference.md`](result-json-reference.md) for field definitions), and contains: rubric scores (mean ± stdev across N=3 judge trials), automated metrics (scope-check counts, files modified, runtime), audit trail (`transcript.md`, `diff.patch`), and the reproducibility tuple `(plugin_sha, base_sha, schema_version, run_id)`.
+- [ ] `result.json` for `(v0.1.0, diffbot-experiment-design, baseline-1)` exists, validates against [`harness/schemas/result.schema.yaml`](../harness/schemas/result.schema.yaml), and contains: rubric scores (mean ± stdev across N=3 judge trials), automated metrics (scope-check, files_modified, runtime), audit trail (`transcript.md`, `diff.patch`), and the reproducibility tuple `(plugin_sha, base_sha, schema_version, run_id)`. For field-by-field detail see [`docs/result-json-reference.md`](result-json-reference.md).
 - [ ] Three baseline runs at `v0.1.0` exist; cross-run variance is documented in `analysis/baseline-v0.1.0.md`.
 - [ ] Plugin tag `v0.2.0` exists in `elliewlh2094/robotics-agent-skills` with one new skill and one new hook (one logical change per tag per ADR-0005, but skill+hook are coupled here — release notes will document the coupling).
 - [ ] Three runs at `v0.2.0` exist; comparison report at `analysis/reports/<date>_v0.1.0_vs_v0.2.0.md` reports per-dimension delta and pooled stdev, with explicit classification of signal vs. noise.

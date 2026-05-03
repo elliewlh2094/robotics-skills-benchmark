@@ -1,7 +1,7 @@
 # ADR-0003: Hybrid scoring — automated metrics + LLM-judge rubric + human spot-check
 
 ## Status
-Accepted. **Updated 2026-05-03:** field names listed below in the Decision section (`exit_status`, `out_of_scope_file_count`, etc.) reflect the original drafting. The canonical names are now in [`docs/result-json-reference.md`](../result-json-reference.md) per [ADR-0008](0008-canonical-result-json-schema.md): `exit_code`, `scoring.scope_check.out_of_scope_count`, `scoring.scope_check.out_of_scope_paths`, `scoring.rubric.{mean,stdev,overall_mean,overall_stdev}`. The N=3 trials + recompute-overall semantics described here are unchanged.
+Accepted
 
 ## Date
 2026-05-02

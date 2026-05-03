@@ -114,7 +114,7 @@ Build the harness, define the V1 task, run a 3-trial baseline at the unmodified 
 #### Task T1.4: Implement scope-check and rubric scorer
 
 **Description:** Two scoring modules.
-- `harness/scope_check.py`: given a unified diff and a `scope_files` glob list, returns `{out_of_scope_count, out_of_scope_paths}`. Pure function; cheap to test with hand-constructed diffs.
+- `harness/scope_check.py`: given a unified diff and a `scope_files` glob list, returns `{out_of_scope_file_count, out_of_scope_paths}`. Pure function; cheap to test with hand-constructed diffs.
 - `harness/score_rubric.py`: given `(task, agent_output, rubric)`, subprocess `claude -p --output-format json` (no plugin loaded) per ADR-0006. Use `--json-schema` to enforce the rubric's output shape. Run **N=3 trials**, returning `{per_trial: [...], mean: {dim: float}, stdev: {dim: float}, overall_mean: float, overall_stdev: float}`.
 
 After both modules exist, `harness/run_experiment.py` is updated to call them inline and merge results into `result.json.scoring`.
@@ -143,36 +143,40 @@ After both modules exist, `harness/run_experiment.py` is updated to call them in
 
 ---
 
-#### Task T1.4a: Canonical `result.json` schema  ✅
+#### Task T1.4a: Canonical `result.json` schema + reference  ✅
 
-**Description:** Consolidate the implicit `result.json` shape (previously restated across 5 docs and the runner's `partial:` literal) into one machine-verifiable schema, one human-readable reference, and a validate-on-write hook in the runner. Lock the contract before T1.5 writes the first real data — every later schema change becomes a migration. Per [ADR-0008](decisions/0008-canonical-result-json-schema.md).
+**Description:** Consolidate the implicit `result.json` shape (previously restated across 5 docs and the runner's `partial:` literal, with concrete drift between them) into one machine-verifiable JSON Schema, one human-readable reference, and a validate-on-write hook in the runner. Lock the contract before T1.5 writes the first real data — every later schema change becomes a migration. Per [ADR-0008](decisions/0008-result-json-schema-and-reference.md).
 
 **Acceptance criteria:**
-- [x] `harness/schemas/result.schema.yaml` exists; status-conditional `if/then` rules cover partial/success/error/timeout
-- [x] `docs/result-json-reference.md` covers every field with Type / When present / Writer / Semantics; "Planned" section lists the four deferred fields
-- [x] `harness/validate_result.py` provides `--all` + single-path CLI plus `validate(dict)` / `iter_errors(dict)` programmatic API
-- [x] `write_result()` validates before atomic rename; rejected payload preserved at `result.invalid.json`
-- [x] [ADR-0008](decisions/0008-canonical-result-json-schema.md) records the decision; ADR-0001 receives a forward-pointer
-- [x] `docs/spec.md` FR3, `docs/reliability-criteria.md`, `docs/v1-plan.md`, `docs/roadmap.md` reduced to pointers (narrative kept, field listings removed)
-- [x] `docs/spec.md` FR3 corrected: `exit_status` → `exit_code` (matches code)
+- [x] `harness/schemas/result.schema.yaml` exists; status-conditional `if/then` rules cover incomplete/success/error/timeout; plugin-mode `oneOf` distinguishes by value (not key presence); `scratch_dir` lifecycle enforced (required when status≠success; rejected on success)
+- [x] `docs/result-json-reference.md` covers every field with type / required-when / nullable-when / writer / notes; "Future fields" section lists the four deferred fields (skills_invoked, scoring.test_pass, scoring.sim_metric, scoring.static_check)
+- [x] `harness/validate_result.py` provides `--all` + single-path CLI plus `validate_result(dict)` programmatic API
+- [x] `write_result()` validates before atomic rename; runner restructured so `scratch_dir` is in the very first persisted partial; if even the error-state result fails validation, payload preserved at `result.invalid.json` (forensics)
+- [x] Field renames adopted: `scoring.rubric` → `scoring.rubric_scores`; `out_of_scope_count` → `out_of_scope_file_count`
+- [x] `judge_calls` and `hook_blocks` declared at top level (per ADR-0003 automated metrics)
+- [x] [ADR-0008](decisions/0008-result-json-schema-and-reference.md) records the decision; ADR-0001 receives a forward-pointer; ADRs 0003/0006 cited as related
+- [x] `docs/spec.md` FR3, `docs/reliability-criteria.md`, `docs/v1-plan.md`, `docs/roadmap.md` reduced to pointers (narrative kept, field listings removed); aspirational fields tagged ⏳
 
 **Verification:**
-- [x] `python3 -m pytest harness/tests/ -q` passes (90 tests at task close: 27 prior + 12 scope_check + 12 score_rubric + 7 runner-integration + 29 validator + 3 write_result regression)
+- [x] `python3 -m pytest harness/tests/ -q` passes (88 tests at task close: 27 prior + 12 scope_check + 12 score_rubric + 7 runner-integration + 25 validator + 5 write_result regression)
 - [x] `python3 harness/validate_result.py --all` exits 0 (no result.json files yet, but command works)
-- [x] `grep -rn "exit_status" docs/ harness/` returns nothing
+- [x] `python3 harness/validate_task.py --all` regression-clean
+- [x] Doc audit: `grep -rn 'out_of_scope_count\b\|scoring\.rubric\b' docs/ harness/` returns no hits outside the canonical reference / ADR
 
-**Dependencies:** T1.4 (just landed `scoring.scope_check` and `scoring.rubric` — the schema captures their shape)
+**Dependencies:** T1.4 (just landed `scoring.scope_check` and `scoring.rubric_scores` — the schema captures their shape)
 
 **Files likely touched:**
 - `harness/schemas/result.schema.yaml`
 - `harness/validate_result.py`
 - `harness/tests/test_validate_result.py`
-- `harness/run_experiment.py` (`write_result()` validate-on-write + `ResultSchemaError`)
+- `harness/run_experiment.py` (`write_result()` validate-on-write + `ResultValidationError`; refinement A scratch_dir restructure)
+- `harness/scope_check.py`, `harness/score_rubric.py` (field rename)
 - `docs/result-json-reference.md`
-- `docs/decisions/0008-canonical-result-json-schema.md`
+- `docs/decisions/0008-result-json-schema-and-reference.md`
 - `docs/spec.md`, `docs/reliability-criteria.md`, `docs/v1-plan.md`, `docs/roadmap.md`, `docs/decisions/0001-three-surface-repo-topology.md`
+- `CLAUDE.md`, `TODO.md`
 
-**Estimated scope:** Small-to-medium (schema + validator + reference doc + ADR + 5 doc reductions)
+**Estimated scope:** Small-to-medium (schema + validator + reference doc + ADR + 5 doc reductions + runner restructure)
 
 ---
 
@@ -183,7 +187,7 @@ After both modules exist, `harness/run_experiment.py` is updated to call them in
 **Acceptance criteria:**
 - [ ] Three `experiments/...v0.1.0...diffbot-experiment-design...baseline-{1,2,3}/` directories exist with valid `result.json`
 - [ ] Each has a non-empty `EXPERIMENT.md` in `diff.patch`
-- [ ] `result.json.scoring.rubric.stdev` and `overall_stdev` recorded for all three
+- [ ] `result.json.scoring.rubric_scores.stdev` recorded for all three
 - [ ] Cross-run pooled stdev recorded in `analysis/baseline-v0.1.0.md`
 - [ ] If any run's status is not `success`, the deviation is investigated and documented before the task closes
 
@@ -192,7 +196,7 @@ After both modules exist, `harness/run_experiment.py` is updated to call them in
 - [ ] Visual review of each EXPERIMENT.md for plausible content (the agent wrote *something* on-topic)
 - [ ] `analysis/baseline-v0.1.0.md` is concrete with numeric stdev values, not handwaving
 
-**Dependencies:** T1.4 (scoring), T1.4a (schema validation), T1.3 (runner), T1.2 (task)
+**Dependencies:** T1.4 (scoring), T1.3 (runner), T1.2 (task)
 
 **Files likely touched:**
 - `experiments/2026-...-_v0.1.0_diffbot-experiment-design_baseline-{1,2,3}/`

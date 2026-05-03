@@ -61,17 +61,16 @@ Three logically separate surfaces:
 - Clones the task repo at the pinned SHA into a scratch worktree.
 - Materializes the requested plugin version.
 - Invokes the agent with `problem_statement` as prompt and the plugin's scope env vars set.
-- Captures: full transcript, final diff, list of files modified, runtime, exit code.
+- Captures: full transcript, final diff, list of files modified, runtime, exit status.
 - Output: `experiments/<YYYY-MM-DD>_<plugin-tag>_<task-id>_<run-id>/{result.json,transcript.md,diff.patch}`.
 
 ### FR3. Scoring (hybrid, task-type-routed)
-
-> **Field shape of `result.json` is canonically defined in [`docs/result-json-reference.md`](result-json-reference.md) and validated by [`harness/schemas/result.schema.yaml`](../harness/schemas/result.schema.yaml). This section describes *which* metrics matter and *why*; the reference document is the source of truth for field names, types, and nullability rules ([ADR-0008](decisions/0008-canonical-result-json-schema.md)).**
-
-- **Always:** automated metrics — scope-discipline counts, files modified, runtime, exit code.
+- **Always:** automated metrics (scope-discipline + transcript + runtime).
 - **For `rubric` / `hybrid` tasks:** LLM-judge scorer with N=3 trials; reports per-dimension score, overall mean, stdev across trials.
 - **For `unit-test` / `hybrid` tasks:** SWE-bench-style FAIL_TO_PASS / PASS_TO_PASS run inside per-task Docker container.
 - **For `sim-metric` tasks:** parse a numeric metric from rosbag/log; with `seed_required: true`, run N trials and report success rate.
+
+> **Field shapes** for the `result.json` structure that captures these scoring outputs: see [`result-json-reference.md`](result-json-reference.md) (human reference) and [`harness/schemas/result.schema.yaml`](../harness/schemas/result.schema.yaml) (machine schema, validated on every write per [ADR-0008](decisions/0008-result-json-schema-and-reference.md)).
 
 ### FR4. Cross-version analysis
 - A report compares two plugin tags on the same task set, reporting per-dimension delta and pooled stdev.
@@ -86,15 +85,18 @@ Three logically separate surfaces:
 
 The user-defined reliability criteria, each mapped to a captured field:
 
-| # | Criterion | Captured by |
+| # | Criterion | Captured by (representative fields) |
 |---|---|---|
-| C1 | **Auditability** — agent's reasoning is inspectable | `transcript.md`, `diff.patch`, `files_modified`, `skills_invoked` (planned) |
-| C2 | **Verifiability** — output is checkable mechanically | `scoring.test_pass` (planned), `scoring.rubric`, `scoring.sim_metric` (planned), `static_check` (planned) |
-| C3 | **Stability** — same input → similar output | `scoring.rubric.stdev` across N=3 trials; pooled stdev across runs |
-| C4 | **Scope-discipline** — no unrelated edits | `scoring.scope_check.out_of_scope_count`, `scoring.scope_check.out_of_scope_paths`, `hook_blocks` (planned) |
+| C1 | **Auditability** — agent's reasoning is inspectable | `transcript.md`, `diff.patch`, `files_modified`, `skills_invoked` ⏳ |
+| C2 | **Verifiability** — output is checkable mechanically | `scoring.test_pass` ⏳, `scoring.rubric_scores`, `scoring.sim_metric` ⏳, `scoring.static_check` ⏳ |
+| C3 | **Stability** — same input → similar output | `scoring.rubric_scores.stdev` across N=3 trials; pooled stdev across runs |
+| C4 | **Scope-discipline** — no unrelated edits | `scoring.scope_check.out_of_scope_file_count`, `scoring.scope_check.out_of_scope_paths`, `hook_blocks` |
 | C5 | **Recoverability** — failure point is identifiable | `status`, `error`, `scratch_dir` retained on failure |
 
-See [`docs/reliability-criteria.md`](reliability-criteria.md) for the full mapping and mechanism per criterion, and [`docs/result-json-reference.md`](result-json-reference.md) for canonical field definitions.
+See [`docs/reliability-criteria.md`](reliability-criteria.md) for the full criterion → field
+mapping and mechanism per criterion. For field shapes (types, required-when, nullable-when,
+writer), see [`docs/result-json-reference.md`](result-json-reference.md). Fields tagged ⏳
+are aspirational (declared as goals; runner doesn't write them yet).
 
 ## 8. Key entities
 

@@ -4,7 +4,17 @@ The user defined "reliable" robotics-software-development by 5 criteria. Every e
 must produce evidence for each. This document maps each criterion to specific fields the
 harness captures in `result.json` and to the mechanism that produces them.
 
-> **Field shape and types** — see [`docs/result-json-reference.md`](result-json-reference.md) (canonical) and [`harness/schemas/result.schema.yaml`](../harness/schemas/result.schema.yaml). Fields marked **(planned)** below are referenced by criteria but not yet in the schema; each lands in the PR that implements its producing feature with a schema-version bump per [ADR-0008](decisions/0008-canonical-result-json-schema.md).
+> **Field shapes** (types, required-when, nullable-when, writer): see
+> [`result-json-reference.md`](result-json-reference.md) — the canonical
+> human reference, paired with [`harness/schemas/result.schema.yaml`](../harness/schemas/result.schema.yaml)
+> (the machine schema, validated on every write). This document is the
+> canonical *criterion → field mapping*; the reference doc is the canonical
+> *field → shape* mapping. See [ADR-0008](decisions/0008-result-json-schema-and-reference.md)
+> for why this split exists.
+>
+> Fields tagged ⏳ below are aspirational — declared as goals here but not
+> yet written by the runner. They land via `scoring.additionalProperties: true`
+> in their target phase. See the "Future fields" section of the reference doc.
 
 ## C1. Auditability — *I can understand why the agent did what it did*
 
@@ -12,7 +22,7 @@ harness captures in `result.json` and to the mechanism that produces them.
 - `transcript.md` — full agent reasoning trail (truncated to 50 KB)
 - `diff.patch` — exact change set vs. `base_sha`
 - `result.json.files_modified` — list of files written or created
-- `result.json.skills_invoked` **(planned)** — which plugin skills the agent loaded (read from transcript)
+- ⏳ `result.json.skills_invoked` — which plugin skills the agent loaded (read from transcript; not yet implemented)
 
 **Mechanism:** runner captures stdout/stderr of the Claude Code subprocess; post-processor
 greps for skill-load markers.
@@ -20,10 +30,10 @@ greps for skill-load markers.
 ## C2. Verifiability — *output can be checked by tests, sim, static analysis, or logs*
 
 **Captured by:**
-- `result.json.scoring.test_pass` **(planned, T3.2)** — for `unit-test` / `hybrid` tasks (FAIL_TO_PASS + PASS_TO_PASS)
-- `result.json.scoring.rubric` — for `rubric` / `hybrid` tasks (per-dimension + overall)
-- `result.json.scoring.sim_metric` **(planned, Phase 5+)** — for `sim-metric` / `hybrid` tasks (numeric metric extracted from rosbag)
-- `result.json.scoring.static_check` **(planned, Phase 3+)** — for refactor tasks (e.g., `ros2 doctor`, `ament_lint`)
+- ⏳ `result.json.scoring.test_pass` — for `unit-test` / `hybrid` tasks (FAIL_TO_PASS + PASS_TO_PASS); Phase 3 (T3.2)
+- `result.json.scoring.rubric_scores` — for `rubric` / `hybrid` tasks (per-dimension + overall)
+- ⏳ `result.json.scoring.sim_metric` — for `sim-metric` / `hybrid` tasks (numeric metric extracted from rosbag); Phase 4
+- ⏳ `result.json.scoring.static_check` — for refactor tasks (e.g., `ros2 doctor`, `ament_lint`); not yet scoped
 
 **Mechanism:** scorer modules under `harness/score_*.py`; each task declares which methods
 apply via `verification_method`.
@@ -32,8 +42,7 @@ apply via `verification_method`.
 
 **Captured by:**
 - `result.json.run_id` — distinguishes repeated runs of the same `(plugin_tag, task_id)`
-- `result.json.scoring.rubric.stdev` — per-dimension sample stdev across N=3 LLM-judge trials
-- `result.json.scoring.rubric.overall_stdev` — overall sample stdev
+- `result.json.scoring.rubric_scores.stdev` — N=3 LLM-judge trials with different seeds
 - `analysis/reports/<date>_<plugin>_vs_<plugin>.md` — pooled stdev across plugin versions
 
 **Mechanism:** harness runs each baseline and post-change comparison ≥3 times. If an
@@ -43,9 +52,9 @@ calls it noise — never a "promising trend."
 ## C4. Scope-discipline — *the agent does not modify unrelated files or expand requirements*
 
 **Captured by:**
-- `result.json.scoring.scope_check.out_of_scope_count` — number of files outside `scope_files_declared` that were modified
+- `result.json.scoring.scope_check.out_of_scope_file_count` — number of files outside `scope_files` that were modified
 - `result.json.scoring.scope_check.out_of_scope_paths` — the actual paths
-- `result.json.hook_blocks` **(planned, T2.3)** — count of `pre-commit-scope-check` hook rejections
+- `result.json.hook_blocks` — count of `pre-commit-scope-check` hook rejections (always 0 until T2.3 lands the hook; valid 0-state today)
 
 **Mechanism:**
 1. Plugin-side `pre-commit-scope-check` hook reads `BENCHMARK_SCOPE_FILES` env var, refuses
@@ -69,7 +78,7 @@ Worktrees are retained for failed runs; cleaned on success.
 Every `result.json` also includes:
 - `runtime_s` — wall-clock from invocation to scorer completion
 - `transcript_bytes` — raw transcript size (proxy for token cost)
-- `judge_calls` **(planned)** — total LLM-judge subprocess invocations (today inferable from `scoring.rubric.n_trials`)
+- `judge_calls` — number of LLM-judge trials (3 for rubric/hybrid, 0 for test-pass)
 
 These don't enforce reliability directly but are needed to detect when reliability gains
 are paid for in unaffordable ways.

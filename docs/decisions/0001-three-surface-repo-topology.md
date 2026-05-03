@@ -1,7 +1,7 @@
 # ADR-0001: Three-surface repository topology with URL+SHA task references
 
 ## Status
-Accepted. **Updated 2026-05-03:** the `result.json` field set referenced in this ADR's Consequences section is now canonically defined in [`docs/result-json-reference.md`](../result-json-reference.md) per [ADR-0008](0008-canonical-result-json-schema.md).
+Accepted
 
 ## Date
 2026-05-02
@@ -46,7 +46,7 @@ Reproducibility is keyed on `(plugin_sha, base_sha, schema_version, run_id)` —
 ## Consequences
 
 - ✅ Meta-repo stays lightweight even as the task set scales to 50+ external references.
-- ✅ Reproducibility works without depending on the harness storing task code. The reproducibility tuple `(plugin_sha, base_sha, schema_version, run_id)` is fully captured in every `result.json`; if the plugin path is not a git working tree, `plugin_sha` is null and a warning is logged.
+- ✅ Reproducibility works without depending on the harness storing task code. The reproducibility tuple `(plugin_sha, base_sha, schema_version, run_id)` is fully captured in every `result.json`; if the plugin path is not a git working tree, `plugin_sha` is null and a warning is logged. The exact JSON shape and validation rules are in [`harness/schemas/result.schema.yaml`](../../harness/schemas/result.schema.yaml) (per [ADR-0008](0008-result-json-schema-and-reference.md)); the human reference is [`docs/result-json-reference.md`](../result-json-reference.md).
 - ✅ Plugin can be installed from `elliewlh2094/robotics-agent-skills` without harness machinery.
 - ⚠️ Harness must handle external clones at run time → introduces a network-dependency at execution rather than at commit time.
 - ⚠️ Stale upstream repos fail loudly (SHA fetch fails) — preferable to silent corruption, but requires runtime error handling.
@@ -56,3 +56,4 @@ Reproducibility is keyed on `(plugin_sha, base_sha, schema_version, run_id)` —
 
 - ADR-0002 (worktrees for parallel runs) — operationalizes the parallelism this topology enables.
 - ADR-0005 (one change per plugin tag) — relies on plugin-as-separate-repo for clean tagging.
+- ADR-0008 (result.json schema + reference) — formalizes the exact shape of the `result.json` fields where this ADR's reproducibility tuple lands.
