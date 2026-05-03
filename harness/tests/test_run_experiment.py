@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import subprocess
 
 from harness.run_experiment import (
@@ -21,7 +22,9 @@ from harness.run_experiment import (
     render_transcript,
     resolve_git_sha,
     safe_path_component,
+    write_result,
 )
+from harness.validate_result import ResultValidationError
 
 
 # ---------------------------------------------------------------------------
@@ -358,3 +361,95 @@ def test_compute_scoring_records_missing_rubric_file(tmp_path):
     assert "error" in scoring["rubric_scores"]
     assert scoring["rubric_scores"]["error"]["type"] == "FileNotFoundError"
     assert judge_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# write_result: validate-on-write (slice 3)
+# ---------------------------------------------------------------------------
+
+_SHA40 = "0" * 40
+
+
+def _valid_partial(scratch_dir: str = "/tmp/exp-scratch/foo") -> dict:
+    """Minimal status='incomplete' result that passes the schema."""
+    return {
+        "schema_version": 1,
+        "experiment_id": "2026-05-03_v0.1.0_diffbot_baseline-1",
+        "plugin_tag": "v0.1.0",
+        "plugin_path": "/cache/plugin",
+        "plugin_repo": None,
+        "plugin_ref": None,
+        "plugin_sha": _SHA40,
+        "task_id": "diffbot",
+        "run_id": "baseline-1",
+        "base_repo": "https://github.com/x/y",
+        "base_sha": _SHA40,
+        "scope_files_declared": ["EXPERIMENT.md"],
+        "available_tools": ["Read"],
+        "max_turns": 50,
+        "seed": None,
+        "status": "incomplete",
+        "started_at": "2026-05-03T12:00:00Z",
+        "completed_at": None,
+        "runtime_s": None,
+        "exit_code": None,
+        "error": None,
+        "files_modified": [],
+        "transcript_bytes": 0,
+        "scoring": {},
+        "hook_blocks": 0,
+        "judge_calls": 0,
+        "scratch_dir": scratch_dir,
+    }
+
+
+def test_write_result_succeeds_on_valid_dict_and_writes_atomically(tmp_path):
+    exp_dir = tmp_path / "exp"
+    write_result(exp_dir, _valid_partial())
+    written = json.loads((exp_dir / "result.json").read_text())
+    assert written["status"] == "incomplete"
+    assert written["scratch_dir"] == "/tmp/exp-scratch/foo"
+    # Atomic-write contract: no leftover .tmp file
+    assert not list(exp_dir.glob("*.tmp"))
+
+
+def test_write_result_raises_on_missing_required_field(tmp_path):
+    """Schema requires plugin_sha — dropping it must reject the write."""
+    bad = _valid_partial()
+    del bad["plugin_sha"]
+    with pytest.raises(ResultValidationError):
+        write_result(tmp_path / "exp", bad)
+    # File must NOT have been written
+    assert not (tmp_path / "exp" / "result.json").exists()
+
+
+def test_write_result_raises_on_partial_missing_scratch_dir(tmp_path):
+    """Refinement A: scratch_dir is required from the very first partial-write."""
+    bad = _valid_partial()
+    del bad["scratch_dir"]
+    with pytest.raises(ResultValidationError):
+        write_result(tmp_path / "exp", bad)
+
+
+def test_write_result_raises_on_success_with_scratch_dir(tmp_path):
+    """Schema rejects scratch_dir on success (worktree was pruned)."""
+    bad = _valid_partial()
+    bad.update({
+        "status": "success",
+        "completed_at": "2026-05-03T12:30:00Z",
+        "runtime_s": 1800.0,
+        "exit_code": 0,
+        "scoring": {"scope_check": {"out_of_scope_file_count": 0, "out_of_scope_paths": []}},
+        # scratch_dir still in dict — must be rejected
+    })
+    with pytest.raises(ResultValidationError):
+        write_result(tmp_path / "exp", bad)
+
+
+def test_write_result_raises_on_invalid_plugin_mode_combo(tmp_path):
+    """Refinement B: plugin_repo set without plugin_ref is neither mode."""
+    bad = _valid_partial()
+    bad["plugin_repo"] = "https://github.com/x/y"
+    bad["plugin_ref"] = None  # mismatched — not local mode, not URL+ref mode
+    with pytest.raises(ResultValidationError):
+        write_result(tmp_path / "exp", bad)

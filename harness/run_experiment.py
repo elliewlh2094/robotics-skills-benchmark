@@ -43,6 +43,10 @@ if __package__ in (None, ""):
 
 from harness.scope_check import compute_scope_violations  # noqa: E402
 from harness.score_rubric import JudgeInvocationError, score_rubric  # noqa: E402
+from harness.validate_result import (  # noqa: E402
+    ResultValidationError,
+    validate_result,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TASKS_DIR = REPO_ROOT / "tasks"
@@ -519,6 +523,16 @@ def compute_scoring(
 # ---------------------------------------------------------------------------
 
 def write_result(experiment_dir: Path, result: dict) -> None:
+    """Validate `result` against the schema, then atomically write to result.json.
+
+    Validation runs *before* the write so a malformed payload never lands on
+    disk through this path. Callers handling the runner-crash branch may want
+    to fall back to writing `result.invalid.json` for forensics if even the
+    error-state result fails validation — see `run()`'s except handler.
+
+    Raises ResultValidationError on schema failure (does not write).
+    """
+    validate_result(result)
     experiment_dir.mkdir(parents=True, exist_ok=True)
     result_path = experiment_dir / "result.json"
     tmp = result_path.with_suffix(".json.tmp")
@@ -597,10 +611,19 @@ def run(
             file=sys.stderr,
         )
 
-    # 4. Prepare experiment dir + write incomplete partial result.
-    #    If the runner itself crashes after this point, the partial remains
-    #    for debugging (per T1.3 acceptance criterion).
+    # 4. Compute task_worktree path (deterministic from triple) and the
+    #    experiment dir. Path computation precedes the partial-write so that
+    #    `scratch_dir` is included in the very first persisted record — even
+    #    if add_worktree fails, the partial result file says where the
+    #    worktree would have been (refinement A: scratch_dir lifecycle).
+    cache = ensure_cached_clone(base_repo, base_sha, repos_cache)
+    task_worktree = scratch_root / safe_path_component(f"{plugin_tag}__{task_id}__{run_id}")
     exp_dir = experiments_root / experiment_dir_name(plugin_tag, task_id, run_id)
+
+    # 5. Build + write the incomplete partial. If anything below this line
+    #    fails, the partial remains on disk for forensics (per T1.3
+    #    acceptance criterion). scratch_dir is set from this first write so
+    #    the schema's "status != success → scratch_dir required" rule holds.
     partial: dict = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "experiment_id": exp_dir.name,
@@ -632,14 +655,11 @@ def run(
         # will populate it from hook output thereafter.
         "hook_blocks": 0,
         "judge_calls": 0,
+        "scratch_dir": str(task_worktree),
     }
-    write_result(exp_dir, partial)
+    write_result(exp_dir, partial)  # validates: status=incomplete with scratch_dir
 
-    # 5. Materialize the task worktree at base_sha. Path includes the full
-    #    triple to prevent collisions across concurrent (plugin_tag, task_id, run_id)
-    #    experiments that happen to share a run_id.
-    cache = ensure_cached_clone(base_repo, base_sha, repos_cache)
-    task_worktree = scratch_root / safe_path_component(f"{plugin_tag}__{task_id}__{run_id}")
+    # 6. Materialize the task worktree at base_sha.
     if task_worktree.exists():
         # Stale leftover from a previous failed run; prune before re-creating.
         remove_worktree(cache, task_worktree)
@@ -649,7 +669,7 @@ def run(
     success_for_cleanup = False
 
     try:
-        # 6. Run the agent
+        # 7. Run the agent
         agent = run_agent(
             plugin_path=plugin_path,
             task_worktree=task_worktree,
@@ -670,11 +690,11 @@ def run(
             "transcript_bytes": len(agent["stdout"]),
         })
 
-        # 7. Capture diff and files-modified
+        # 8. Capture diff and files-modified
         diff_text, files_modified = capture_diff(task_worktree, base_sha)
         final_result["files_modified"] = files_modified
 
-        # 8. Score: scope-discipline + rubric judge (T1.4). Judge failures are
+        # 9. Score: scope-discipline + rubric judge (T1.4). Judge failures are
         #    captured into scoring.rubric_scores.error so we still have
         #    transcript + diff + scope-check on disk for debugging.
         deliverable_text = gather_deliverable(task_worktree, files_modified, scope_files)
@@ -682,33 +702,54 @@ def run(
         final_result["scoring"] = scoring
         final_result["judge_calls"] = judge_calls
 
-        # 9. Write artifacts
+        # 10. Write artifacts
         (exp_dir / "diff.patch").write_text(diff_text)
         (exp_dir / "transcript.md").write_text(render_transcript(agent["stdout"], agent["stderr"]))
 
-        # 10. Persist final result
-        write_result(exp_dir, final_result)
-
-        success_for_cleanup = (final_result["status"] == "success")
+        # 11. Persist final result. On success, scratch_dir must be absent
+        #     (worktree gets pruned in step 12; the schema rejects
+        #     scratch_dir in success state). Build a write-time view without
+        #     scratch_dir rather than mutating final_result, so a downstream
+        #     validation failure can still fall back to the error path with
+        #     scratch_dir intact.
+        if final_result["status"] == "success":
+            to_write = {k: v for k, v in final_result.items() if k != "scratch_dir"}
+            write_result(exp_dir, to_write)
+            success_for_cleanup = True
+        else:
+            write_result(exp_dir, final_result)
 
     except Exception as e:
         # Runner-level crash. Persist what we know so the experiment dir is
-        # parseable; surface the exception to the caller.
+        # parseable; surface the exception to the caller. scratch_dir is
+        # already in final_result from the partial-write, so the error
+        # state validates cleanly.
         final_result.update({
             "status": "error",
             "error": {"type": type(e).__name__, "message": str(e)},
             "completed_at": now_utc_iso(),
         })
-        write_result(exp_dir, final_result)
+        try:
+            write_result(exp_dir, final_result)
+        except ResultValidationError as ve:
+            # Last-ditch: if even the error-state result fails validation,
+            # dump the unvalidated payload alongside so we don't lose
+            # forensics. Don't let the validation error mask the original
+            # exception — re-raise `e`, not `ve`.
+            print(
+                f"[runner] WARNING: result.json failed schema validation on "
+                f"error path: {ve}. Writing unvalidated payload to "
+                f"result.invalid.json for forensics.",
+                file=sys.stderr,
+            )
+            (exp_dir / "result.invalid.json").write_text(
+                json.dumps(final_result, indent=2, sort_keys=True)
+            )
         raise
     finally:
-        # 11. Cleanup per ADR-0002: prune worktree on success, retain on failure.
+        # 12. Cleanup per ADR-0002: prune worktree on success; retain on failure.
         if success_for_cleanup:
             remove_worktree(cache, task_worktree)
-        else:
-            # Record the retained worktree path for inspection.
-            final_result["scratch_dir"] = str(task_worktree)
-            write_result(exp_dir, final_result)
 
     return exp_dir
 
