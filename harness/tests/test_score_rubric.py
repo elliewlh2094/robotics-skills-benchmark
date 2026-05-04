@@ -8,12 +8,15 @@ exercised by T1.5's live baseline runs, not here.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
 from harness.score_rubric import (
     JUDGE_OUTPUT_SCHEMA,
     JudgeInvocationError,
+    _build_judge_cmd,
+    _judge_cwd,
     build_judge_prompt,
     score_rubric,
 )
@@ -187,3 +190,89 @@ def test_judge_output_schema_constrains_scores_to_integers_in_range():
     assert inner["type"] == "integer"
     assert inner["minimum"] == 0
     assert inner["maximum"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Judge cmd construction and isolation (ADR-0009)
+# ---------------------------------------------------------------------------
+
+# Flags that would re-introduce context the judge must not see. A judge cmd
+# must NOT contain any of these (per ADR-0003 independence + ADR-0009
+# isolation contract). --bare and --settings are forbidden because we
+# deliberately do NOT use bare-mode auth: cwd-based exclusion + the flags
+# below are sufficient and avoid the API-key billing surface.
+_FORBIDDEN_CONTEXT_FLAGS = {
+    "--bare",
+    "--settings",
+    "--mcp-config",
+    "--agents",
+    "--plugin-dir",
+    "--add-dir",
+    "--system-prompt",
+    "--system-prompt-file",
+    "--append-system-prompt",
+    "--append-system-prompt-file",
+}
+
+
+def test_build_judge_cmd_excludes_context_loading_flags():
+    cmd = _build_judge_cmd("hello")
+    leaked = _FORBIDDEN_CONTEXT_FLAGS & set(cmd)
+    assert not leaked, f"judge cmd leaked context flags: {leaked}"
+
+
+def test_build_judge_cmd_includes_isolation_flags():
+    cmd = _build_judge_cmd("hello")
+    assert "--no-session-persistence" in cmd
+    assert "--disable-slash-commands" in cmd
+    # --allowedTools "" = empty allowlist (no real tools exposed). The
+    # structured-output mechanism is internal and is not gated by this flag.
+    assert cmd[cmd.index("--allowedTools") + 1] == ""
+    # --max-turns 3 is the minimum that satisfies --json-schema's internal
+    # tool round-trip (one tool_use turn, one tool_result turn, one final
+    # text turn). 1 is unsatisfiable for structured-output prompts.
+    assert cmd[cmd.index("--max-turns") + 1] == "3"
+
+
+def test_build_judge_cmd_passes_prompt_via_p_flag():
+    cmd = _build_judge_cmd("HELLO_PROMPT_BODY")
+    assert cmd[cmd.index("-p") + 1] == "HELLO_PROMPT_BODY"
+
+
+def test_judge_cwd_is_isolated_tempdir():
+    cwd = _judge_cwd()
+    # The cwd must be outside this repo so project-local plugins (agent-skills,
+    # explanatory-output-style) are not loaded into the judge session.
+    repo_root = Path(__file__).resolve().parents[2]
+    assert repo_root not in cwd.parents and cwd != repo_root
+    # And it must be the dedicated tempdir prefix, not bare /tmp (to avoid
+    # picking up unrelated project-CLAUDE.md or .claude/ that might sit there).
+    assert cwd.name.startswith("robotics-benchmark-judge-cwd-")
+    assert cwd.is_dir()
+
+
+def test_judge_cwd_is_cached_per_process():
+    assert _judge_cwd() is _judge_cwd()
+
+
+def test_subprocess_judge_runner_uses_isolated_cwd(monkeypatch):
+    """End-to-end check: the runner's subprocess.run sees the isolated cwd."""
+    from harness import score_rubric as sr
+
+    captured = {}
+
+    class _FakeProc:
+        returncode = 0
+        stdout = '{"result": "{\\"scores\\": {\\"a\\": 1}, \\"overall\\": 1.0, \\"rationale\\": \\"r\\"}"}'
+        stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        return _FakeProc()
+
+    monkeypatch.setattr(sr.subprocess, "run", _fake_run)
+    sr.subprocess_judge_runner("any prompt")
+    assert captured["cwd"] == str(_judge_cwd())
+    assert "--bare" not in captured["cmd"]
+    assert "--disable-slash-commands" in captured["cmd"]

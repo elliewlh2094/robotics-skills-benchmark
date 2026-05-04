@@ -1,9 +1,11 @@
-"""LLM-judge rubric scorer per ADR-0003 (hybrid scoring) and ADR-0006.
+"""LLM-judge rubric scorer per ADR-0003 (hybrid scoring) and ADR-0009.
 
-Subprocess `claude --bare -p --json-schema ...` to score a deliverable against
-a rubric. `--bare` skips plugins, hooks, CLAUDE.md auto-discovery — the judge
-must run with no plugin loaded so it cannot grade work using the same skills
-that produced it (per ADR-0003's independence requirement).
+Subprocess `claude -p --json-schema ...` to score a deliverable against a
+rubric. The judge runs in an isolated cwd outside this repo (excludes the
+project-local agent-skills plugin per ADR-0009) with --disable-slash-commands,
+--no-session-persistence, --max-turns 1, and --tools "" — so it cannot grade
+work using the same skills that produced it (per ADR-0003's independence
+requirement).
 
 N=3 trials by default; aggregates per-dimension mean ± sample stdev so the
 non-determinism of the LLM judge is *measured* rather than hidden behind a
@@ -20,9 +22,13 @@ this module.
 """
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
 import statistics
 import subprocess
+import tempfile
+from pathlib import Path
 from typing import Callable
 
 JudgeRunner = Callable[[str], dict]
@@ -193,31 +199,69 @@ def score_rubric(
 
 DEFAULT_JUDGE_TIMEOUT_S = 600
 
+_JUDGE_CWD: Path | None = None
 
-def subprocess_judge_runner(prompt: str, *, timeout_s: int = DEFAULT_JUDGE_TIMEOUT_S) -> dict:
-    """Invoke `claude --bare -p` with structured-output validation. Returns parsed payload.
 
-    `--bare` skips plugins, hooks, and CLAUDE.md auto-discovery — the judge runs
-    independently of the plugin under test, satisfying ADR-0003's independence
-    requirement and T1.4's permission-denial criterion. `--tools ""` disables
-    all tools (the judge produces a single JSON response from one prompt).
-    `cwd=/tmp` is belt-and-braces against any path-based context leakage.
+def _judge_cwd() -> Path:
+    """A per-process empty tempdir used as the judge subprocess's cwd.
+
+    Per ADR-0009: cwd outside this repo is load-bearing for excluding the
+    project-local agent-skills plugin from the judge's session. A dedicated
+    tempdir (vs /tmp) prevents any project-CLAUDE.md or .claude/ that might
+    sit in /tmp from being discovered, and contains any stray writes the
+    subprocess might emit.
+
+    Cached: one tempdir per Python process, removed at interpreter exit.
     """
-    cmd = [
+    global _JUDGE_CWD
+    if _JUDGE_CWD is None:
+        _JUDGE_CWD = Path(tempfile.mkdtemp(prefix="robotics-benchmark-judge-cwd-"))
+        atexit.register(shutil.rmtree, str(_JUDGE_CWD), True)
+    return _JUDGE_CWD
+
+
+def _build_judge_cmd(prompt: str) -> list[str]:
+    """Construct the `claude` command for a single judge invocation.
+
+    Per ADR-0009: judge shares the user's environment (no --bare) but disables
+    skills, sessions, and the agentic loop. Local plugins are excluded by cwd.
+    Extracted for testability: a unit test asserts that --bare and other
+    context-introducing flags (--mcp-config, --agents, --plugin-dir, etc.)
+    are NOT present.
+    """
+    # --max-turns 3: --json-schema is implemented internally as a forced
+    # tool round-trip (one assistant turn emits the structured-output tool_use,
+    # one user turn delivers the tool_result, one assistant turn emits the
+    # final text). 1 turn cannot satisfy this; 3 is the minimum + 1 of headroom.
+    # --allowedTools "": empty allowlist = no real tools exposed (the
+    # structured-output mechanism is internal, not in the allowlist).
+    return [
         "claude",
-        "--bare",
         "--print",
         "--output-format", "json",
         "--no-session-persistence",
-        "--max-turns", "1",
+        "--disable-slash-commands",
+        "--max-turns", "3",
         "--json-schema", json.dumps(JUDGE_OUTPUT_SCHEMA),
-        "--tools", "",
+        "--allowedTools", "",
         "-p", prompt,
     ]
+
+
+def subprocess_judge_runner(prompt: str, *, timeout_s: int = DEFAULT_JUDGE_TIMEOUT_S) -> dict:
+    """Invoke `claude` to score a deliverable. Returns parsed JSON payload.
+
+    Per ADR-0009: judge runs without --bare in an isolated cwd. This excludes
+    the project-local agent-skills plugin (cwd outside repo) while keeping the
+    user's existing OAuth login (keychain). --tools "" + --max-turns 1 close
+    the tool surface; --disable-slash-commands prevents skill auto-resolution;
+    --no-session-persistence prevents cross-call state.
+    """
+    cmd = _build_judge_cmd(prompt)
     try:
         proc = subprocess.run(
             cmd,
-            cwd="/tmp",
+            cwd=str(_judge_cwd()),
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -239,9 +283,11 @@ def subprocess_judge_runner(prompt: str, *, timeout_s: int = DEFAULT_JUDGE_TIMEO
             f"claude judge wrapper is not JSON: {proc.stdout[:500]!r}"
         ) from e
 
-    # `claude --output-format json` returns {"result": "<string>", ...} for text
-    # output. With --json-schema the model emits a JSON string in `result`; some
-    # versions inline the parsed object. Handle both.
+    # With --json-schema, the parsed JSON object lands in `structured_output`
+    # (the `result` field gets the model's plain-text accompaniment). Older
+    # versions may inline JSON in `result`; handle both.
+    if "structured_output" in wrapper:
+        return wrapper["structured_output"]
     payload = wrapper.get("result", wrapper)
     if isinstance(payload, str):
         try:

@@ -1,7 +1,7 @@
 # ADR-0006: Headless Claude Code for both runner and LLM judge
 
 ## Status
-Accepted
+Accepted (judge-invocation §narrowed by [ADR-0009](0009-judge-isolation-without-bare-mode.md) on 2026-05-04 — `--bare` not used; isolation via cwd + `--disable-slash-commands` + `--allowedTools ""`. Auth claim "Max plan covers both surfaces" is preserved.)
 
 ## Date
 2026-05-02

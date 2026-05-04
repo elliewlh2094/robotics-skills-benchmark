@@ -143,6 +143,8 @@ The decisions underlying this spec are recorded in `docs/decisions/` as ADRs. Re
 | [ADR-0005](decisions/0005-one-change-per-plugin-tag.md) | One logical change per plugin tag |
 | [ADR-0006](decisions/0006-headless-claude-code-for-runner-and-judge.md) | Headless Claude Code for both runner and judge |
 | [ADR-0007](decisions/0007-v1-sim-engine-relaxation.md) | V1 `sim_engine` criterion relaxed; long-term Gazebo unchanged |
+| [ADR-0008](decisions/0008-result-json-schema-and-reference.md) | Canonical `result.json` schema + reference doc, validated on every write |
+| [ADR-0009](decisions/0009-judge-isolation-without-bare-mode.md) | Judge isolation via cwd + flags, not `--bare` (narrows ADR-0006 §judge) |
 
 ## 12. References
 

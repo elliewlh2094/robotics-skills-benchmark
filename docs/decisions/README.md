@@ -15,6 +15,8 @@ consequences accepted.
 | [ADR-0005](0005-one-change-per-plugin-tag.md) | Accepted | One logical change per plugin tag | 2026-05-02 |
 | [ADR-0006](0006-headless-claude-code-for-runner-and-judge.md) | Accepted | Headless Claude Code for both runner and LLM judge | 2026-05-02 |
 | [ADR-0007](0007-v1-sim-engine-relaxation.md) | Accepted | V1 sim_engine criterion relaxed; long-term Gazebo direction unchanged | 2026-05-02 |
+| [ADR-0008](0008-result-json-schema-and-reference.md) | Accepted | Canonical `result.json` schema + reference doc, validated on every write | 2026-05-03 |
+| [ADR-0009](0009-judge-isolation-without-bare-mode.md) | Accepted | Judge isolation via cwd + flags, not `--bare` (narrows ADR-0006 §judge) | 2026-05-04 |
 
 ## Conventions
 

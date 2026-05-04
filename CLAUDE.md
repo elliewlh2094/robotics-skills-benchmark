@@ -26,6 +26,8 @@ The canonical record is `docs/decisions/` (ADRs). Cliff-notes:
 
 7. **Plugin progression** — `arpitg1304/robotics-agent-skills` has 10 knowledge skills; we add the behavioral layer (phased workflow skills, sub-agents, hooks). Hooks are load-bearing for the scope-discipline reliability criterion, not polish.
 
+8. **Judge isolation via cwd, not `--bare`** — judge subprocess runs without `--bare` in a per-process tempdir under `/tmp/robotics-benchmark-judge-cwd-…`; project-local plugins (`agent-skills`, `explanatory-output-style`) are excluded by cwd. Six user-level plugins are loaded and accepted for V1; revisit at Phase 3 when debugging tasks may overlap with `andrej-karpathy-skills`. Smoke test (`harness/smoke_test_judge.py`) verifies via `system/init` event before each plugin-version baseline. → [ADR-0009](docs/decisions/0009-judge-isolation-without-bare-mode.md)
+
 ## Common gotchas
 
 - `data_for_presentation/` is gitignored (presentation materials, not part of the project).
