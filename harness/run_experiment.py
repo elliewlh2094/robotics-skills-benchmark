@@ -303,10 +303,13 @@ def run_agent(
     Per ADR-0006: uses `--plugin-dir`, `--output-format json`,
     `--no-session-persistence`, `--max-turns N`. Permissions handling:
 
-      - If `available_tools` is given (preferred for V1 design tasks): use
-        `--tools <comma-separated list>` to hard-restrict the agent to a
-        specific toolset. Bash is deliberately omitted from V1's design tasks.
-        See ADR-0006 for the `--tools` vs `--allowedTools` distinction.
+      - If `available_tools` is given (preferred for V1 design tasks): pass
+        BOTH `--tools <list>` (hard-restrict the agent's toolset; Bash is
+        deliberately omitted from V1's design tasks) AND `--allowedTools <list>`
+        (auto-approve invocations of those same tools). The two flags are
+        complementary, not alternatives: `--tools` controls availability,
+        `--allowedTools` controls auto-approval. Without `--allowedTools`,
+        headless mode prompts for each Write/Edit and the agent stalls.
 
       - Otherwise: fall back to `--dangerously-skip-permissions` and log a
         warning so the user is aware of the broad permission grant.
@@ -323,10 +326,9 @@ def run_agent(
         "--max-turns", str(max_turns),
     ]
     if available_tools:
-        # Use --tools (restrict to the listed set) rather than --allowedTools
-        # (auto-allow-without-prompt; doesn't restrict availability). For headless
-        # benchmark runs we want a hard restriction. See ADR-0006.
-        cmd += ["--tools", ",".join(available_tools)]
+        tool_csv = ",".join(available_tools)
+        cmd += ["--tools", tool_csv]
+        cmd += ["--allowedTools", tool_csv]
     else:
         print(
             "[runner] WARNING: task has no `available_tools`; "
@@ -476,21 +478,25 @@ def render_transcript(stdout: str, stderr: str) -> str:
 # Scoring (T1.4): scope-discipline + LLM-judge rubric
 # ---------------------------------------------------------------------------
 
+NO_DELIVERABLE_MARKER = "[no in-scope files were produced by the agent]"
+
+
 def gather_deliverable(
     worktree: Path, files_modified: list[str], scope_files: list[str]
 ) -> str:
     """Concatenate the in-scope files the agent actually produced, for the judge.
 
     Only files that BOTH appear in `files_modified` AND match a `scope_files`
-    pattern are included. If nothing in scope was produced, return a marker so
-    the judge can score 0 with an "empty deliverable" rationale.
+    pattern are included. Returns NO_DELIVERABLE_MARKER if nothing in scope was
+    produced — the orchestrator detects this marker downstream and flips
+    status to "no-deliverable" (skipping the judge entirely).
     """
     in_scope = [
         f for f in files_modified
         if any(fnmatch.fnmatchcase(f, pat) for pat in scope_files)
     ]
     if not in_scope:
-        return "[no in-scope files were produced by the agent]"
+        return NO_DELIVERABLE_MARKER
     parts: list[str] = []
     for f in sorted(in_scope):
         path = worktree / f
@@ -531,6 +537,12 @@ def compute_scoring(
     method = task.get("verification_method")
     rubric_path = task.get("rubric_path")
     if method in ("rubric", "hybrid") and rubric_path:
+        if deliverable_text == NO_DELIVERABLE_MARKER:
+            # No in-scope file was produced. Skip the judge entirely — three
+            # judge calls of "scored 0 because empty" pollute the trial dataset
+            # and waste API budget. The top-level status will be flipped to
+            # "no-deliverable" by the orchestrator; rubric_scores stays absent.
+            return scoring, judge_calls
         full_rubric_path = task["_task_dir"] / rubric_path
         try:
             rubric_text = full_rubric_path.read_text()
@@ -745,17 +757,28 @@ def run(
         final_result["scoring"] = scoring
         final_result["judge_calls"] = judge_calls
 
+        # If the agent ran cleanly (status="success" from claude exit code) but
+        # produced no in-scope file, downgrade status to "no-deliverable" so
+        # downstream tools don't treat an empty trial as a real measurement.
+        # The judge has already been skipped inside compute_scoring; rubric_scores
+        # is absent from `scoring`.
+        if (
+            final_result["status"] == "success"
+            and deliverable_text == NO_DELIVERABLE_MARKER
+        ):
+            final_result["status"] = "no-deliverable"
+
         # 10. Write artifacts
         (exp_dir / "diff.patch").write_text(diff_text)
         (exp_dir / "transcript.md").write_text(render_transcript(agent["stdout"], agent["stderr"]))
 
-        # 11. Persist final result. On success, scratch_dir must be absent
-        #     (worktree gets pruned in step 12; the schema rejects
-        #     scratch_dir in success state). Build a write-time view without
-        #     scratch_dir rather than mutating final_result, so a downstream
-        #     validation failure can still fall back to the error path with
-        #     scratch_dir intact.
-        if final_result["status"] == "success":
+        # 11. Persist final result. On success / no-deliverable, scratch_dir
+        #     must be absent (worktree gets pruned in step 12; the schema
+        #     rejects scratch_dir in those states). Build a write-time view
+        #     without scratch_dir rather than mutating final_result, so a
+        #     downstream validation failure can still fall back to the error
+        #     path with scratch_dir intact.
+        if final_result["status"] in ("success", "no-deliverable"):
             to_write = {k: v for k, v in final_result.items() if k != "scratch_dir"}
             write_result(exp_dir, to_write)
             success_for_cleanup = True

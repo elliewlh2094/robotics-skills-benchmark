@@ -49,6 +49,15 @@ The canonical record is `docs/decisions/` (ADRs). Cliff-notes:
   `tasks/index.yaml`. See `docs/adding-a-task.md`.
 - Rubric scoring is non-deterministic by design. Trust the mean ± stdev across N=3 trials,
   not any single score.
+- **Runner permissions: `--tools` AND `--allowedTools` must both be passed (with the same
+  list).** `--tools` restricts availability; `--allowedTools` auto-approves. Without
+  `--allowedTools`, headless mode prompts on every Write/Edit and the agent stalls — the
+  run completes `status: "success"` with zero deliverable. Surfaced in T1.5 dry-run #1
+  (2026-05-04); fix in `harness/run_experiment.py:run_agent()`. ADR-0006 amended 2026-05-05.
+- **`status: "no-deliverable"` ≠ `"success"`.** When the agent runs cleanly but produces
+  no in-scope file, the runner flips status to `no-deliverable`, skips the judge, and
+  omits `rubric_scores`. A 0.0 rubric score should mean "judge measured zero quality,"
+  not "there was nothing to measure." See `docs/result-json-reference.md` Lifecycle.
 
 ## Reliability criteria → result.json fields
 

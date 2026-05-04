@@ -166,11 +166,14 @@ properties:
   # ---- Lifecycle / outcome ----
   status:
     type: string
-    enum: [incomplete, success, error, timeout]
+    enum: [incomplete, success, error, timeout, no-deliverable]
     description: |
       Lifecycle position. "incomplete" = partial-write before the agent runs;
-      transitions to one of {success, error, timeout} after the agent
-      completes (or fails to).
+      transitions to one of {success, error, timeout, no-deliverable} after the
+      agent completes (or fails to). "no-deliverable" = agent ran cleanly but
+      produced no in-scope file; the judge is NOT invoked in this state, so
+      rubric_scores is absent — distinguishing "we couldn't measure" from "we
+      measured zero quality."
 
   started_at:
     type: string
@@ -372,12 +375,15 @@ allOf:
         judge_calls: { const: 0 }
         hook_blocks: { const: 0 }
 
-  # ---- status="success": agent ran cleanly; error must be null; scratch_dir absent ----
+  # ---- status="success" or "no-deliverable": agent ran cleanly; error null; scratch_dir absent ----
   # `scratch_dir: false` rejects the property entirely (false-as-schema rejects
   # any value, so any presence of scratch_dir fails). The worktree was pruned
-  # per ADR-0002, so the path is gone — recording it would lie.
+  # per ADR-0002, so the path is gone — recording it would lie. "no-deliverable"
+  # follows the same lifecycle as "success" (clean exit, worktree pruned); the
+  # difference is only that no in-scope file was produced, so the judge was
+  # skipped and rubric_scores is absent from `scoring`.
   - if:
-      properties: { status: { const: success } }
+      properties: { status: { enum: [success, no-deliverable] } }
     then:
       properties:
         error:        { type: "null" }

@@ -12,13 +12,13 @@
 > **Decision context.** [ADR-0008](decisions/0008-result-json-schema-and-reference.md)
 > records *why* this canonical pair exists.
 >
-> **Last updated:** 2026-05-03.
+> **Last updated:** 2026-05-05 (added `no-deliverable` lifecycle state — see Lifecycle below).
 
 ---
 
 ## Lifecycle
 
-`status` traces the experiment's progress through four states:
+`status` traces the experiment's progress through five states:
 
 ```
                           ┌─────────────┐
@@ -27,14 +27,17 @@
                                  │
                                  │  agent subprocess returns
                                  ▼
-                  ┌──────────────┼──────────────┐
-                  ▼              ▼              ▼
-              ┌────────┐   ┌─────────┐   ┌─────────┐
-              │success │   │  error  │   │ timeout │
-              └────────┘   └─────────┘   └─────────┘
-              normal exit  agent crash   wall-clock
-                           OR runner     limit hit
-                           crash
+            ┌──────────┬──────────┼──────────┬──────────┐
+            ▼          ▼          ▼          ▼          ▼
+        ┌────────┐ ┌────────────┐ ┌─────────┐ ┌─────────┐
+        │success │ │no-deliver- │ │  error  │ │ timeout │
+        │        │ │   able     │ │         │ │         │
+        └────────┘ └────────────┘ └─────────┘ └─────────┘
+        normal     agent ran      agent       wall-clock
+        exit AND   cleanly but    crash       limit hit
+        deliv-     produced no    OR runner
+        erable     in-scope file  crash
+        produced
 ```
 
 **Invariants per state** (enforced by schema; see
@@ -42,10 +45,22 @@
 
 | `status` | `error` | `scratch_dir` | `scoring` | `completed_at` |
 |---|---|---|---|---|
-| `incomplete` | null | required | `{}` | null |
-| `success`    | null | **forbidden** | `scope_check` required | required |
-| `error`      | required | required | scope_check usually present | required |
-| `timeout`    | required | required | scope_check usually present | required |
+| `incomplete`     | null | required | `{}` | null |
+| `success`        | null | **forbidden** | `scope_check` required, `rubric_scores` present (when configured) | required |
+| `no-deliverable` | null | **forbidden** | `scope_check` required, `rubric_scores` **absent** | required |
+| `error`          | required | required | scope_check usually present | required |
+| `timeout`        | required | required | scope_check usually present | required |
+
+**Why `no-deliverable` exists.** A 0.0 in `rubric_scores` should mean "the
+judge measured zero quality." It must NOT mean "there was nothing to
+measure." Conflating the two would let a permission-bug regression silently
+masquerade as a quality regression in cross-version comparisons (Phase 2
+onward). The orchestrator detects empty deliverables via
+`gather_deliverable()`'s `NO_DELIVERABLE_MARKER` sentinel, skips the judge
+entirely (saving N=3 wasted invocations), and flips status from `success`
+to `no-deliverable`. Surfaced in T1.5 dry-run #1 (2026-05-04) where the
+runner had a permissions wiring bug; documented here so the lifecycle is
+discoverable from the schema, not just from the orchestrator code.
 
 The `scratch_dir` rule (refinement A in ADR-0008) means the worktree path is
 recorded from the very first persisted record. If the runner crashes between
@@ -111,12 +126,12 @@ human label) or `plugin_ref` (which can move). See
 
 | Field | Type | Required when | Nullable when | Writer | Notes |
 |---|---|---|---|---|---|
-| `status` | enum | always | never | `run_experiment.py:run()` (initial=incomplete; updated post-agent) | One of `incomplete`, `success`, `error`, `timeout`. See lifecycle diagram above. |
+| `status` | enum | always | never | `run_experiment.py:run()` (initial=incomplete; updated post-agent) | One of `incomplete`, `success`, `no-deliverable`, `error`, `timeout`. See lifecycle diagram above. |
 | `started_at` | string (ISO 8601) | always | never | `run_experiment.py:now_utc_iso()` | Initially the partial-write time; overwritten with the agent subprocess's actual start time once it runs. |
 | `completed_at` | string \| null | always | when `status=incomplete` | `run_experiment.py:run_agent()` | UTC ISO 8601. Set when agent finishes (success/error/timeout) or runner crashes. |
 | `runtime_s` | number \| null | always | when `status=incomplete` | `run_experiment.py:run_agent()` | Wall-clock seconds, agent start to agent end (or crash point). |
 | `exit_code` | int \| null | always | when `status=incomplete` | `run_experiment.py:run_agent()` | Subprocess exit. `-1` indicates runner-aborted (timeout or missing binary). |
-| `error` | object \| null | always | when `status ∈ {incomplete, success}` | `run_experiment.py:run_agent()` or `run()` except handler | Shape: `{type: string, message: string}`. `type` examples: `missing-binary`, `non-zero-exit`, `timeout`, exception class names. |
+| `error` | object \| null | always | when `status ∈ {incomplete, success, no-deliverable}` | `run_experiment.py:run_agent()` or `run()` except handler | Shape: `{type: string, message: string}`. `type` examples: `missing-binary`, `non-zero-exit`, `timeout`, exception class names. |
 | `files_modified` | list[string] | always | never (empty list when no edits) | `run_experiment.py:capture_diff()` | From `git diff --cached --name-only base_sha` after `git add -A`. Includes untracked files. |
 | `transcript_bytes` | int (≥0) | always | never | `run_experiment.py:run_agent()` | `len(agent_stdout)`. The actual transcript is rendered to `transcript.md` alongside. |
 
@@ -125,13 +140,13 @@ human label) or `plugin_ref` (which can move). See
 | Field | Type | Required when | Nullable when | Writer | Notes |
 |---|---|---|---|---|---|
 | `hook_blocks` | int (≥0) | always | never | `run_experiment.py:run()` (partial=0; populated post-agent) | Count of `pre-commit-scope-check` hook rejections. **Always 0 in Phase 1** — the hook lands at task T2.3 and will populate this from hook output thereafter. Valid 0-state today, not "unknown". |
-| `judge_calls` | int (≥0) | always | never | `run_experiment.py:compute_scoring()` (=`n_trials` when rubric ran, else 0) | Number of LLM-judge subprocess invocations. Surfaced at top level for cost-tracking analytics in Phase 5+. |
+| `judge_calls` | int (≥0) | always | never | `run_experiment.py:compute_scoring()` (=`n_trials` when rubric ran on a non-empty deliverable, else 0) | Number of LLM-judge subprocess invocations. `0` in the no-deliverable state — judge is skipped to avoid logging "scored 0 because empty" 3× and wasting API budget. Surfaced at top level for cost-tracking analytics in Phase 5+. |
 
 ### Scratch / cleanup
 
 | Field | Type | Required when | Nullable when | Writer | Notes |
 |---|---|---|---|---|---|
-| `scratch_dir` | string | `status ∈ {incomplete, error, timeout}` | never (when present) | `run_experiment.py:run()` (partial dict) | FS path of the task worktree. Set from the very first partial-write (refinement A). **Forbidden when `status=success`** — worktree pruned per ADR-0002. |
+| `scratch_dir` | string | `status ∈ {incomplete, error, timeout}` | never (when present) | `run_experiment.py:run()` (partial dict) | FS path of the task worktree. Set from the very first partial-write (refinement A). **Forbidden when `status ∈ {success, no-deliverable}`** — worktree pruned per ADR-0002 in both terminal-clean states. |
 
 ### Scoring
 
@@ -149,8 +164,11 @@ Always present once `status != incomplete`. Computed by
 | `out_of_scope_paths` | list[string] | Sorted, deduplicated list of those paths. |
 
 #### `scoring.rubric_scores`
-Present iff the task's `verification_method ∈ {rubric, hybrid}`. Two
-shapes (validated via `oneOf`):
+Present iff the task's `verification_method ∈ {rubric, hybrid}` AND
+`status != "no-deliverable"`. When `status == "no-deliverable"` the judge
+is not invoked (there is nothing to evaluate) and `rubric_scores` is
+absent — see Lifecycle above. Two shapes (validated via `oneOf`) when
+present:
 
 **Success shape** — `score_rubric()` completed all trials:
 

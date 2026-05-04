@@ -1,7 +1,9 @@
 # ADR-0006: Headless Claude Code for both runner and LLM judge
 
 ## Status
-Accepted (judge-invocation §narrowed by [ADR-0009](0009-judge-isolation-without-bare-mode.md) on 2026-05-04 — `--bare` not used; isolation via cwd + `--disable-slash-commands` + `--allowedTools ""`. Auth claim "Max plan covers both surfaces" is preserved.)
+Accepted. Amendments:
+- 2026-05-04 (ADR-0009): judge-invocation §narrowed — `--bare` not used; isolation via cwd + `--disable-slash-commands` + `--allowedTools ""`. Auth claim "Max plan covers both surfaces" preserved.
+- 2026-05-05 (T1.5 dry-run #1): runner-invocation § corrected — `--tools` and `--allowedTools` are **complementary**, not alternatives. Passing only `--tools` left the headless agent stalled on every Write prompt; the run completed `status: "success"` with zero deliverable. Fixed by passing both flags. The runner also gained a `no-deliverable` lifecycle state to distinguish "agent ran cleanly but produced nothing" from real success — see [`docs/result-json-reference.md`](../result-json-reference.md).
 
 ## Date
 2026-05-02
@@ -36,7 +38,8 @@ claude --plugin-dir <plugin_worktree>
        --output-format json
        --no-session-persistence
        --max-turns N                              # defense against runaway loops
-       --tools "<task.available_tools>"           # preferred when task declares them
+       --tools "<task.available_tools>"           # restrict availability to this set
+       --allowedTools "<task.available_tools>"    # auto-approve those same tools
        OR
        --dangerously-skip-permissions             # fallback with explicit warning
        -p "<problem_statement>"
@@ -44,14 +47,19 @@ claude --plugin-dir <plugin_worktree>
 with `cwd=<task_worktree>` and env vars `BENCHMARK_SCOPE_FILES`, optional `BENCHMARK_SEED`.
 
 Tool-availability strategy:
-- **Preferred:** every task instance declares an `available_tools` list (e.g. `["Read", "Glob", "Grep", "Write", "Edit"]` for V1 design tasks). Runner passes these to `--tools <comma-separated>`. Bash is deliberately omitted from V1's design tasks since the agent should not be running anything.
+- **Preferred:** every task instance declares an `available_tools` list (e.g. `["Read", "Glob", "Grep", "Write", "Edit"]` for V1 design tasks). Runner passes the same list to BOTH `--tools` (hard whitelist) AND `--allowedTools` (auto-approve). Bash is deliberately omitted from V1's design tasks since the agent should not be running anything.
 - **Fallback only:** if a task lacks `available_tools`, the runner falls back to `--dangerously-skip-permissions` and logs an explicit warning to stderr so the wide grant is never silent.
 
-**Important — `--tools` vs `--allowedTools`:** these flags are *not* equivalent despite the names suggesting otherwise.
+**Important — `--tools` and `--allowedTools` are complementary, not alternatives.** The names suggest overlap; they don't.
 - `--tools "Read Edit Write"`: hard whitelist; tools not in the list are unavailable to the agent. This is the **restriction** flag.
-- `--allowedTools "Read Edit Write"`: tools in the list auto-execute without prompting; tools *not* in the list are still available, just prompted. In headless `-p` mode there's no human to answer prompts, so non-listed-tool calls have undefined behavior (hang / timeout / fail). This is the **auto-allow** flag, not a restriction.
+- `--allowedTools "Read Edit Write"`: tools in the list auto-execute without prompting; tools *not* in the list are still available, just prompted for approval. This is the **auto-approve** flag.
 
-The runner uses `--tools` because we want a hard restriction. The schema field is named `available_tools` (mirroring the docs' wording "list of available tools from the built-in set") so that reading the task instance and reading `claude --help` agree on what the field means. An earlier name (`allowed_tools`) was rejected because it invited confusion with the `--allowedTools` flag — they have *different* semantics.
+In headless `-p` mode there is no human to answer prompts, so:
+- `--tools` alone → restriction works, but every Write/Edit call still prompts → the agent stalls on the first Write and the run completes "successfully" with zero output. (This is exactly what happened in T1.5 dry-run #1.)
+- `--allowedTools` alone → tools auto-approve, but the agent has access to anything (including Bash) — unsafe.
+- Both together → the agent is restricted to the whitelisted set AND those tools auto-execute without prompts. **This is what the runner uses.**
+
+The schema field is named `available_tools` (mirroring the docs' wording "list of available tools from the built-in set"). The runner reads it once and passes it to both flags. An earlier name (`allowed_tools`) was rejected because it invited confusion with the `--allowedTools` flag — they have *different* semantics, and conflating them was the root cause of the dry-run #1 stall.
 
 **Judge invocation (sketch):**
 ```

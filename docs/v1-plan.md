@@ -54,7 +54,7 @@ V1 is built on the architectural decisions recorded in `docs/decisions/`. Cliff-
 | [0003](decisions/0003-hybrid-scoring.md) | Three signals: automated + LLM-judge rubric (N=3) + human spot-check 1-in-5 |
 | [0004](decisions/0004-v1-staged-activities.md) | V1 ships only experiment-design; debugging is Phase 3, spec/planning Phase 4 |
 | [0005](decisions/0005-one-change-per-plugin-tag.md) | One logical change per tag; refactor-only tags as harness sanity checks |
-| [0006](decisions/0006-headless-claude-code-for-runner-and-judge.md) | Headless `claude -p` for both runner and judge; `--tools` for hard whitelist (not `--allowedTools`); `--max-turns` ceiling |
+| [0006](decisions/0006-headless-claude-code-for-runner-and-judge.md) | Headless `claude -p` for both runner and judge; `--tools` + `--allowedTools` (complementary: restrict + auto-approve) with the same task whitelist; `--max-turns` ceiling. Amended 2026-05-05. |
 | [0007](decisions/0007-v1-sim-engine-relaxation.md) | V1 `sim_engine` relaxed to "any runnable ROS 2 / mock hardware OK"; humble branch pinned |
 
 These are **frozen** for V1. Reversal requires a new superseding ADR.

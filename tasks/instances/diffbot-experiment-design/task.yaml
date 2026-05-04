@@ -54,9 +54,11 @@ verification_method: rubric
 scope_files:
   - "EXPERIMENT.md"
 
-# Per ADR-0006: V1 design tasks restrict the agent's toolset via `--tools`
-# (a hard whitelist), not `--allowedTools` (which only governs auto-permission
-# and does not restrict availability). The agent should not be running anything,
+# Per ADR-0006 (amended 2026-05-05): the runner passes this list to BOTH
+# `--tools` (hard whitelist; restricts availability) AND `--allowedTools`
+# (auto-approves invocations of those same tools). Both are needed in
+# headless mode — `--tools` alone leaves the agent stalled on every Write
+# prompt with no human to answer. The agent should not be running anything,
 # so Bash and similar are deliberately excluded.
 available_tools:
   - Read

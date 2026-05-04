@@ -149,6 +149,30 @@ def test_timeout_validates():
     validate_result(t)
 
 
+def test_no_deliverable_validates():
+    """status='no-deliverable': agent ran cleanly but produced nothing in scope.
+
+    Same shape as 'success' (error null, scratch_dir absent, completed_at set,
+    exit_code 0) but rubric_scores is absent — the judge was skipped because
+    there was nothing to evaluate. judge_calls is 0.
+    """
+    nd = _base_partial()
+    nd.pop("scratch_dir")
+    nd.update({
+        "status": "no-deliverable",
+        "completed_at": "2026-05-03T12:05:00Z",
+        "runtime_s": 263.1,
+        "exit_code": 0,
+        "files_modified": [],
+        "transcript_bytes": 4321,
+        "judge_calls": 0,
+        "scoring": {
+            "scope_check": {"out_of_scope_file_count": 0, "out_of_scope_paths": []},
+        },
+    })
+    validate_result(nd)
+
+
 # ---------------------------------------------------------------------------
 # Plugin sourcing oneOf — refinement B (distinguish by VALUE not key presence)
 # ---------------------------------------------------------------------------
