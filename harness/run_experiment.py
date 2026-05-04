@@ -78,6 +78,22 @@ def safe_path_component(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("_") or "_"
 
 
+# CLI inputs that flow into filesystem paths must be validated at the boundary.
+# Pattern: must start with alphanumeric, allow . _ - thereafter. Rejects empty,
+# leading-dash (e.g. "-rf"), traversal ("../"), and any path-separating chars.
+_CLI_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _validate_cli_name(field: str, value: str) -> None:
+    """Reject CLI args that flow into Path joins if they contain unsafe chars."""
+    if not _CLI_NAME_RE.fullmatch(value):
+        raise ValueError(
+            f"--{field} value {value!r} must match {_CLI_NAME_RE.pattern} "
+            "(alphanumeric start, then letters/digits/dot/underscore/hyphen only). "
+            "This is a path-traversal guard."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Task loading
 # ---------------------------------------------------------------------------
@@ -288,8 +304,9 @@ def run_agent(
     `--no-session-persistence`, `--max-turns N`. Permissions handling:
 
       - If `available_tools` is given (preferred for V1 design tasks): use
-        `--allowedTools <space-separated list>` to restrict the agent to a
+        `--tools <comma-separated list>` to hard-restrict the agent to a
         specific toolset. Bash is deliberately omitted from V1's design tasks.
+        See ADR-0006 for the `--tools` vs `--allowedTools` distinction.
 
       - Otherwise: fall back to `--dangerously-skip-permissions` and log a
         warning so the user is aware of the broad permission grant.
@@ -393,11 +410,25 @@ def capture_diff(task_worktree: Path, base_sha: str) -> tuple[str, list[str]]:
 
     Trick: `git add -A` first, then `git diff --cached base_sha`. Staging makes
     new files visible to diff without committing them.
+
+    If `git add -A` fails (e.g., the agent did `git init` inside the worktree,
+    or wrote a path git refuses to stage), degrade to "no diff captured" rather
+    than crashing the whole experiment — the agent still produced an artifact
+    we want to keep.
     """
-    subprocess.run(
-        ["git", "-C", str(task_worktree), "add", "-A"],
-        check=True, capture_output=True,
-    )
+    try:
+        subprocess.run(
+            ["git", "-C", str(task_worktree), "add", "-A"],
+            check=True, capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print(
+            f"[runner] WARNING: `git add -A` failed in {task_worktree}: "
+            f"{e.stderr.decode(errors='replace').strip()[:300]}. "
+            "Skipping diff capture; result.json will record empty diff.",
+            file=sys.stderr,
+        )
+        return "", []
     diff = subprocess.run(
         ["git", "-C", str(task_worktree), "diff", "--cached", base_sha],
         capture_output=True, text=True, check=True,
@@ -604,6 +635,18 @@ def run(
     # ran with. Recorded in result.json regardless of plugin source mode.
     plugin_sha = resolve_git_sha(plugin_path)
     if plugin_sha is None:
+        if plugin_repo is not None:
+            # URL+ref mode: the worktree we just materialized must be a git tree.
+            # A None here means materialize_plugin silently produced something
+            # broken — fail loudly rather than write a result with plugin_sha=null
+            # and lose reproducibility.
+            raise RuntimeError(
+                f"materialize_plugin produced a non-git path at {plugin_path} "
+                f"for {plugin_repo}@{plugin_ref}. plugin_sha cannot be resolved. "
+                "Inspect the cache directory and the materialize_plugin code path."
+            )
+        # Local --plugin-path mode: caller may have pointed at a non-git dir
+        # on purpose (e.g., development with no commits yet). Warn and continue.
         print(
             f"[runner] WARNING: plugin path {plugin_path} is not a git working tree; "
             "result.json will record plugin_sha=null. Reproducibility from this "
@@ -803,6 +846,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", default=None,
                         help="Optional BENCHMARK_SEED env var passed to the agent.")
     args = parser.parse_args(argv)
+
+    # Validate CLI fields that flow into filesystem paths (load_task,
+    # experiments_root, scratch_root). Rejects "../", leading dashes,
+    # path separators, etc. before any Path() join is built from them.
+    try:
+        _validate_cli_name("task", args.task_id)
+        _validate_cli_name("run", args.run_id)
+        _validate_cli_name("plugin-tag", args.plugin_tag)
+    except ValueError as e:
+        parser.error(str(e))
 
     if (args.plugin_path is None) == (args.plugin_repo is None):
         parser.error("provide either --plugin-path OR (--plugin-repo + --plugin-ref)")

@@ -276,3 +276,27 @@ def test_subprocess_judge_runner_uses_isolated_cwd(monkeypatch):
     assert captured["cwd"] == str(_judge_cwd())
     assert "--bare" not in captured["cmd"]
     assert "--disable-slash-commands" in captured["cmd"]
+
+
+# ---------------------------------------------------------------------------
+# Integer score enforcement (post-T1.5 hardening)
+# ---------------------------------------------------------------------------
+
+def test_fractional_score_raises_attributing_judge_not_writer():
+    """A judge ignoring the integer schema must surface as a JudgeInvocationError,
+    not slip through and break result.json validation downstream."""
+    judge = _sequence_judge([
+        {"scores": {"clarity": 2.7}, "overall": 2.7, "rationale": "fractional"},
+    ])
+    with pytest.raises(JudgeInvocationError, match="not integer-valued"):
+        score_rubric("r", "d", n_trials=1, judge_runner=judge)
+
+
+def test_integer_valued_float_is_accepted_and_stored_as_int():
+    """Judges may emit `2.0` (float) for an integer score; that's fine."""
+    judge = _sequence_judge([
+        {"scores": {"clarity": 2.0, "brevity": 3.0}, "overall": 2.5, "rationale": "ok"},
+    ])
+    result = score_rubric("r", "d", n_trials=1, judge_runner=judge)
+    assert result["per_trial"][0]["scores"] == {"clarity": 2, "brevity": 3}
+    assert all(isinstance(v, int) for v in result["per_trial"][0]["scores"].values())

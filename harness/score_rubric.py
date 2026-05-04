@@ -108,17 +108,26 @@ def _validate_and_recompute(payload: dict, trial_index: int) -> dict:
         raise JudgeInvocationError(
             f"trial {trial_index}: judge payload missing or empty `scores` field"
         )
-    numeric_scores: dict[str, float] = {}
+    numeric_scores: dict[str, int] = {}
     for dim, val in scores.items():
         if not isinstance(val, (int, float)) or isinstance(val, bool):
             raise JudgeInvocationError(
                 f"trial {trial_index}: dimension {dim!r} has non-numeric score {val!r}"
             )
-        numeric_scores[dim] = float(val)
+        as_float = float(val)
+        if not as_float.is_integer():
+            # The schema constrains scores to integers; a fractional value
+            # means the judge ignored the schema. Surface as a judge error
+            # rather than coerce, so downstream result.json validation can't
+            # blame the writer for a judge regression.
+            raise JudgeInvocationError(
+                f"trial {trial_index}: dimension {dim!r} score {val!r} is not integer-valued"
+            )
+        numeric_scores[dim] = int(as_float)
 
     recomputed_overall = sum(numeric_scores.values()) / len(numeric_scores)
     return {
-        "scores": {k: int(v) if v.is_integer() else v for k, v in numeric_scores.items()},
+        "scores": dict(numeric_scores),
         "overall_recomputed": recomputed_overall,
         "overall_judge_reported": payload.get("overall"),
         "rationale": payload.get("rationale", ""),

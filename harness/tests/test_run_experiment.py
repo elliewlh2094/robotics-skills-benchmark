@@ -13,6 +13,7 @@ import pytest
 import subprocess
 
 from harness.run_experiment import (
+    _validate_cli_name,
     cache_dir_for_repo,
     check_plugin_path,
     compute_scoring,
@@ -453,3 +454,38 @@ def test_write_result_raises_on_invalid_plugin_mode_combo(tmp_path):
     bad["plugin_ref"] = None  # mismatched — not local mode, not URL+ref mode
     with pytest.raises(ResultValidationError):
         write_result(tmp_path / "exp", bad)
+
+
+# ---------------------------------------------------------------------------
+# _validate_cli_name (path-traversal guard at CLI entry)
+# ---------------------------------------------------------------------------
+
+import pytest
+
+
+@pytest.mark.parametrize("good", [
+    "baseline-1",
+    "v0.1.0",
+    "diffbot-experiment-design",
+    "Task_42",
+    "a",
+    "0",
+])
+def test_validate_cli_name_accepts_safe_values(good):
+    _validate_cli_name("task", good)  # should not raise
+
+
+@pytest.mark.parametrize("bad", [
+    "",                  # empty
+    "../foo",            # parent traversal
+    "foo/bar",           # slash
+    "foo\\bar",          # backslash
+    "-rf",               # leading dash (could be parsed as a flag)
+    ".hidden",           # leading dot
+    "_under",            # leading underscore
+    "has space",         # whitespace
+    "name;rm -rf /",     # shell metacharacter
+])
+def test_validate_cli_name_rejects_unsafe_values(bad):
+    with pytest.raises(ValueError, match="path-traversal guard"):
+        _validate_cli_name("task", bad)

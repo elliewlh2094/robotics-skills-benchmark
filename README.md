@@ -36,7 +36,7 @@ python harness/run_experiment.py --plugin v0.1.0 --task <task-id> --run baseline
 2. Materializes the plugin at the requested git tag
 3. Invokes Claude Code with the plugin loaded and the task's `problem_statement` as prompt
 4. Captures transcript, diff, files-modified, runtime
-5. Scores via `score_rubric.py` (LLM-judge, N=3 trials) and/or `score_tests.py` (test-pass)
+5. Scores via `score_rubric.py` (LLM-judge, N=3 trials); `score_tests.py` (test-pass) lands in Phase 3
 6. Writes everything to `experiments/<YYYY-MM-DD>_<plugin-tag>_<task-id>_<run-id>/`
 
 ## Adding a benchmark task
@@ -51,7 +51,7 @@ for how each maps to specific fields captured in every `result.json`.
 
 ## Status
 
-Phase 1 (foundation) — see plan at `/home/starlab/.claude/plans/i-want-to-conduct-federated-stream.md`.
+Phase 1 (foundation) — see [`docs/v1-plan.md`](docs/v1-plan.md) for the canonical V1 plan and [`TODO.md`](TODO.md) for the current operational pointer.
 
 For the long-term vision (V1 deliverables, near-term versions, full original scope, deliberate
 non-goals), see [`docs/roadmap.md`](docs/roadmap.md).
