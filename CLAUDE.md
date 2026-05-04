@@ -28,6 +28,18 @@ The canonical record is `docs/decisions/` (ADRs). Cliff-notes:
 
 8. **Judge isolation via cwd, not `--bare`** — judge subprocess runs without `--bare` in a per-process tempdir under `/tmp/robotics-benchmark-judge-cwd-…`; project-local plugins (`agent-skills`, `explanatory-output-style`) are excluded by cwd. Six user-level plugins are loaded and accepted for V1; revisit at Phase 3 when debugging tasks may overlap with `andrej-karpathy-skills`. Smoke test (`harness/smoke_test_judge.py`) verifies via `system/init` event before each plugin-version baseline. → [ADR-0009](docs/decisions/0009-judge-isolation-without-bare-mode.md)
 
+## Workflow rules
+
+- **Never run `git commit` without explicit per-message approval.**
+  Staging (`git add`) is fine without asking. Before commit:
+  1. Show the *exact* commit message text you would use.
+  2. Wait for an explicit "commit it" (or equivalent) reply from the user.
+  3. Only then run `git commit`.
+  Approval of commit *structure* (e.g., "split into two", "one commit is fine")
+  does NOT carry forward as approval of the message text. Same rule applies to
+  `git push`, `git reset --hard`, `git rebase`, and any other history-affecting
+  operation.
+
 ## Common gotchas
 
 - `data_for_presentation/` is gitignored (presentation materials, not part of the project).
