@@ -1,0 +1,321 @@
+diff --git a/EXPERIMENT.md b/EXPERIMENT.md
+new file mode 100644
+index 0000000..30916b3
+--- /dev/null
++++ b/EXPERIMENT.md
+@@ -0,0 +1,315 @@
++# EXPERIMENT: Validating First-Order Euler Integration in DiffBot's `read()`
++
++## 1. Background and code-grounded model
++
++`example_2/hardware/diffbot_system.cpp` implements the simulated wheel
++kinematics in two callbacks:
++
++- `write()` (line 215):
++  ```cpp
++  hw_velocities_[i] = hw_commands_[i];
++  ```
++  The state velocity is set equal to the commanded velocity, with no
++  dynamics, no saturation, and no noise.
++
++- `read()` (line 192):
++  ```cpp
++  hw_positions_[i] = hw_positions_[i] + period.seconds() * hw_velocities_[i];
++  ```
++  The state position is updated by `period.seconds() * hw_velocities_[i]`,
++  i.e. the textbook first-order (forward) Euler rule
++  `θ_{k+1} = θ_k + Δt_k · ω_k`.
++
++The `controller_manager` cycle is read → update controllers → write
++(see `example_2/bringup/launch/diffbot.launch.py`). Therefore on cycle
++`k`, `read()` integrates with the velocity that was written in cycle
++`k−1`. This produces a **deterministic one-cycle (≤ Δt) lag** between
++the command and what shows up in the integrated position. The cycle
++period is set in `example_2/bringup/config/diffbot_controllers.yaml`:
++
++```yaml
++controller_manager:
++  ros__parameters:
++    update_rate: 10  # Hz  → Δt = 0.100 s
++```
++
++`hw_positions_` and `hw_velocities_` are exposed by
++`export_state_interfaces()` (lines 105–119) and surface on
++`/joint_states` via `joint_state_broadcaster`.
++
++## 2. Hypothesis (falsifiable, quantitative)
++
++**H1 (primary).** For each wheel `i` ∈ {`left_wheel_joint`,
++`right_wheel_joint`}, if a constant velocity command `v*` (rad/s) is
++held over an interval `[t₀, t₁]` of length `T = t₁ − t₀`, then the
++change in measured joint position satisfies
++
++```
++Δθ_i  =  θ_i(t₁) − θ_i(t₀)  =  v* · T  +  e
++```
++
++with the error term bounded by
++
++```
++|e|  ≤  |v*| · Δt   +   ε_quant
++```
++
++where Δt = 1 / `update_rate` = 0.100 s and `ε_quant` is the residual
++quantization caused by the fact that `t₀, t₁` are sampled from
++`/joint_states` (also at 10 Hz). Concretely we expect
++
++```
++|e|  ≤  2 · |v*| · Δt   =   0.20 · |v*|       (rad)
++```
++
++with the leading term coming from at most one missed integration
++cycle on each end of the window.
++
++**H1 is falsified if** for any tested `v*`, the mean signed residual
++`(Δθ_i − v* · T)` over ≥ 5 trials exceeds the bound above, or
++the empirical slope of `Δθ_i` vs `T` (held-time sweep) deviates from
++`v*` by more than 1 % for `|v*| ≥ 1` rad/s after excluding the ramp
++window (see §3).
++
++**H2 (secondary, structural).** The instantaneous rule
++`θ_{k+1} − θ_k = period.seconds() · ω_k` predicts cycle-to-cycle
++deltas on `/joint_states.position` to within floating-point
++precision (`< 1e-9` rad), once the one-cycle command/velocity lag is
++accounted for. This is a stronger, structural form of H1 that
++distinguishes Euler from any other linear integrator.
++
++## 3. Independent variables, levels, and held-constant confounds
++
++**IV-A: commanded wheel angular velocity `v*` (rad/s).**
++DiffDriveController is given `geometry_msgs/msg/TwistStamped` on
++`/cmd_vel`; with `angular.z = 0` and `wheel_radius = 0.015` m
++(`diffbot_controllers.yaml`), each wheel gets `ω = linear.x / r`.
++Linear levels (m/s) chosen to stay inside the configured
++`linear.x.max_velocity = 1.0`:
++
++| linear.x (m/s) | ω* per wheel (rad/s) |
++| -------------- | -------------------- |
++| 0.0150         |  1.00                |
++| 0.0750         |  5.00                |
++| 0.1500         | 10.00                |
++| 0.3000         | 20.00                |
++| 0.7500         | 50.00                |
++
++These span ~1.7 decades. Sign is varied: each magnitude is run with
++`+linear.x` and `−linear.x`.
++
++**IV-B: hold duration `T` (s).** Levels: {2.0, 5.0, 10.0, 20.0}.
++Combined with IV-A this gives a fan of `v*·T` predictions.
++
++**Replicates.** 5 trials per (IV-A, IV-B) cell to estimate variance.
++
++**Held constant (confounds).**
++
++| Confound                                    | How it is held constant                                                                                                                                                              |
++| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
++| Update rate (Δt)                            | `controller_manager.update_rate = 10` is **not** changed.                                                                                                                            |
++| Hardware plugin                              | Use `use_mock_hardware:=false` so the plugin under test (`ros2_control_demo_example_2/DiffBotSystemHardware`) is loaded, not `mock_components/GenericSystem`. See `diffbot.ros2_control.xacro`. |
++| Controller chain                             | `diff_drive_controller/DiffDriveController` + `joint_state_broadcaster` (defaults from `diffbot_controllers.yaml`). No re-configuration of controllers between trials.                |
++| Acceleration ramp                            | `linear.x.max_acceleration = 1.0` m/s² is left as-is. The ramp duration is `t_ramp = (linear.x_target) / 1.0 s`. The analysis window `[t₀, t₁]` is shifted to start `t_ramp + 0.5 s` after the step and end `0.5 s` before the step-down. |
++| Activation transients                        | `example_param_hw_start_duration_sec = 0`, so `on_activate` returns immediately; first 1.0 s after activation is still discarded.                                                    |
++| `cmd_vel_timeout = 0.5`                      | The publisher emits the same `TwistStamped` at **20 Hz** for the entire hold, so the controller never times out and decays.                                                          |
++| Clock                                        | Real clock (no `use_sim_time`); rosbag uses the same wall clock as the controller manager.                                                                                           |
++| RViz / GUI                                   | Launched with `gui:=false` to remove rendering jitter.                                                                                                                              |
++| Wheel radius / separation                    | `diffbot_controllers.yaml` values unchanged — analysis converts back to wheel ω via the same constants, so any future change is internally consistent.                                |
++| Initial position                              | Re-launch the stack between trials so `hw_positions_[i]` is reset to 0 in `on_activate` (line 152).                                                                                  |
++
++## 4. Procedure
++
++For each trial:
++
++1. Launch the stack with mock-hardware **disabled** (the plugin under
++   test is loaded only when `use_mock_hardware:=false`):
++   ```bash
++   ros2 launch ros2_control_demo_example_2 diffbot.launch.py \
++       use_mock_hardware:=false gui:=false
++   ```
++2. Wait until `joint_state_broadcaster` and `diffbot_base_controller`
++   are reported active by `ros2 control list_controllers`.
++3. Start a rosbag recorder (see §5) **before** sending any command.
++4. Wait 1.0 s of idle baseline (used to verify `Δθ ≈ 0` while
++   `v* = 0`).
++5. Publish a constant `geometry_msgs/msg/TwistStamped` at 20 Hz with
++   `linear.x = L`, `angular.z = 0` for `T + 2·t_ramp` seconds (a
++   helper script using `rclpy` Timer is recommended; the canonical
++   one-shot CLI command is shown for reference, but it must be kept
++   alive for the whole hold so the controller's 0.5 s timeout never
++   fires):
++   ```bash
++   ros2 topic pub --rate 20 /cmd_vel geometry_msgs/msg/TwistStamped \
++       "{header: {stamp: {sec: 0}}, twist: {linear: {x: 0.15}}}"
++   ```
++6. Stop the publisher; publish `linear.x = 0.0` at 20 Hz for 2.0 s to
++   bring the controller's internal velocity command back to zero.
++7. Stop the rosbag and tear down the launch (`Ctrl-C`).
++8. Record meta-data per trial: `(L, T, ω*, sign, trial_id, bag_path,
++   wall_start_time)`.
++
++## 5. Topics to record
++
++All topics are recorded with `ros2 bag record -s mcap` so timestamps
++are message-reception times with nanosecond resolution. Native
++publish rates are listed; the recorder does not down-sample.
++
++| Topic                                  | Type                                | Native rate | Why                                                                                                                                  |
++| -------------------------------------- | ----------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------ |
++| `/joint_states`                        | `sensor_msgs/msg/JointState`        | 10 Hz       | Primary measurement: contains `position` and `velocity` for `left_wheel_joint` and `right_wheel_joint` (i.e. `hw_positions_`, `hw_velocities_`). Sample rate equals `update_rate`, so each message corresponds to exactly one `read()` cycle. |
++| `/dynamic_joint_states`                | `control_msgs/msg/DynamicJointState`| 10 Hz       | Cross-check that `/joint_states` is faithful; same data, different broadcaster channel.                                              |
++| `/cmd_vel`                             | `geometry_msgs/msg/TwistStamped`    | 20 Hz       | Ground truth for the input `v*`; allows precise determination of `t₀` (first non-zero command after step) and `t₁`.                  |
++| `/diffbot_base_controller/odom`        | `nav_msgs/msg/Odometry`             | 50 Hz       | Independent check via `open_loop: true` integration inside DiffDriveController; useful to corroborate that `v* · T` matches at the chassis level too. |
++| `/tf`                                  | `tf2_msgs/msg/TFMessage`            | 50 Hz       | Same as above for `odom→base_link`; redundant but cheap and useful for the visualization in §7.                                      |
++| `/rosout`                              | `rcl_interfaces/msg/Log`            | event-driven| Captures the throttled "Reading states / Writing commands" prints from `diffbot_system.cpp` (lines 200, 220) for sanity checking that `read()` and `write()` are actually being invoked. |
++
++`/joint_states` is sufficient on its own to falsify H1 and H2. The
++others are auxiliary.
++
++## 6. Quantitative success thresholds
++
++Let `t₀` be the timestamp of the first `/joint_states` message in the
++analysis window and `t₁` the timestamp of the last. Let
++`T_meas = t₁ − t₀` (taken from message stamps, not wall clock).
++
++**Threshold S1 (falsifies H1 if violated).** For every cell
++`(v*, T)` and every wheel `i`, over `n = 5` trials:
++
++```
++mean_n |Δθ_i − v* · T_meas|  ≤  2 · |v*| · Δt   =   0.20 · |v*|   (rad)
++```
++
++**Threshold S2 (slope test).** A linear regression of `Δθ_i` on
++`T_meas` (across the IV-B sweep), pooled across replicates at fixed
++`v*`, yields slope `m̂` and intercept `b̂`. The hypothesis is
++upheld iff:
++
++- `|m̂ − v*| / |v*|  <  0.01` for `|v*| ≥ 1` rad/s, and
++- `|b̂|  <  Δt · |v*|`.
++
++**Threshold S3 (structural / H2).** Compute
++`Δθ_k = θ[k] − θ[k−1]` and
++`δ_k = Δθ_k − Δt_k · ω[k−1]` from successive `/joint_states`
++samples (note the index lag, matching the read/write order). Then:
++
++```
++RMS_k δ_k  <  1e-6  rad   over the steady-state window
++max_k |δ_k|  <  1e-5  rad
++```
++
++Numbers above the floating-point floor would indicate either
++non-Euler integration or a hidden saturation/filter.
++
++**Threshold S4 (zero-input null).** During the 1.0 s baseline,
++`max |Δθ_i| < 1e-9` rad. This must be true if `read()` faithfully
++implements the formula on line 192 with `hw_velocities_[i] == 0`.
++
++H1 is **upheld** iff S1, S2 and S4 all pass. H2 is upheld iff S3
++also passes.
++
++## 7. Visualization plan
++
++Four figures, generated from the rosbags with a Python script using
++`rosbag2_py` + `pandas` + `matplotlib`. All inspections below should
++be eyeballed before computing the numerical thresholds.
++
++**Fig. 1 — Position trajectory per trial.**
++For one representative cell (e.g. `linear.x = 0.15`, `T = 10`),
++plot `θ_left(t)` and `θ_right(t)` overlaid with the prediction
++`v* · (t − t₀)` as a dashed line. Inspect:
++(a) ramp segment in the first ~0.15 s after the step;
++(b) straight line through the steady-state window;
++(c) symmetric mirror behaviour for negative `v*`.
++
++**Fig. 2 — Δθ vs predicted v*·T (parity plot).**
++Scatter all (cell × trial × wheel) pairs with `v*·T` on the x-axis
++and measured `Δθ` on the y-axis. Overlay `y = x` and the ±0.20·|v*|
++envelope. Points outside the envelope are flagged.
++
++**Fig. 3 — Per-cycle residual `δ_k` (H2 test).**
++For one held-velocity trial, plot `δ_k` vs `k` over the steady-state
++window. Expectation: noise at the 1e-7 rad level (double precision).
++Any structure (drift, oscillation, bias) refutes H2.
++
++**Fig. 4 — Sensitivity to v\*.**
++Log-log plot of `mean |Δθ − v*·T|` vs `|v*|` across cells. Slope ≈ 1
++is consistent with the `|v*|·Δt` bound (linear-in-velocity error
++floor). A flatter slope would indicate a constant absolute floor
++(rounding) and a steeper slope would indicate a multiplicative
++process not predicted by Euler.
++
++A single Markdown report `results/REPORT.md` collects the four
++figures and the pass/fail flags for S1–S4.
++
++## 8. Failure modes and mitigations
++
++1. **`cmd_vel_timeout` (0.5 s) trips mid-hold and the controller
++   smoothly decays its internal velocity command toward 0, so what
++   reaches `write()` is no longer `v*`.**
++   *Cause:* `diffbot_controllers.yaml` sets `cmd_vel_timeout: 0.5`.
++   *Mitigation:* publish the `TwistStamped` continuously at 20 Hz
++   (period 0.05 s ≪ 0.5 s) for the entire hold, using a long-lived
++   `rclpy` node — never the one-shot
++   `ros2 topic pub --once`. Verify in post-processing that
++   `/cmd_vel` has no gap longer than 0.1 s during the analysis
++   window; if it does, discard the trial.
++
++2. **DiffDriveController acceleration-limiting masks the step.**
++   *Cause:* `linear.x.has_acceleration_limits: true` with
++   `max_acceleration: 1.0` m/s² ramps any step. The wheel `ω` seen
++   by `write()` is therefore not `v*` for the first
++   `t_ramp = linear.x / 1.0` seconds.
++   *Mitigation:* exclude the first `t_ramp + 0.5` s and the last
++   0.5 s of the hold from the analysis window. Verify ramp by
++   checking `/joint_states.velocity[i]` reaches `v*` before
++   measuring; refuse cells where `t_ramp > 0.5 · T`.
++
++3. **`/cmd_vel` message-type mismatch (`Twist` vs `TwistStamped`).**
++   *Cause:* `diff_drive_controller` migrated to `TwistStamped`;
++   publishing the wrong type silently drops messages and the
++   controller appears unresponsive.
++   *Mitigation:* before each trial, run
++   `ros2 topic info -v /cmd_vel` and confirm the type is
++   `geometry_msgs/msg/TwistStamped`. If the local install still
++   uses `Twist`, switch the publisher type rather than reconfiguring
++   the controller.
++
++4. **`/joint_states` rate < `update_rate`.**
++   *Cause:* `joint_state_broadcaster` publishes at the
++   `controller_manager.update_rate` (10 Hz here). If a future
++   change adds an explicit `joint_state_broadcaster.publish_rate`
++   below 10 Hz, samples will skip integration cycles and Δθ will
++   look noisier than predicted.
++   *Mitigation:* run `ros2 topic hz /joint_states` for 5 s before
++   each trial and abort if the measured rate is < 9.5 Hz or > 10.5
++   Hz. The H2 cycle-by-cycle test (S3) requires one-to-one
++   correspondence between messages and `read()` invocations.
++
++5. **First `/joint_states` sample after activation has `position = 0`
++   only because of the `isnan` check at line 150** — but a
++   re-activation without re-launch will *not* reset position
++   (the `if (std::isnan(...))` branch is skipped on second activation
++   because `hw_positions_[i]` was already set to 0 the first time).
++   *Cause:* `on_activate` only initializes when the value is NaN.
++   *Mitigation:* fully relaunch the stack between trials (kill and
++   restart `ros2 launch`) instead of cycling the lifecycle. Confirm
++   in the recorded bag that the first `/joint_states` sample has
++   `position[i] == 0` to within S4.
++
++6. **Wall-clock vs message-stamp drift.**
++   *Cause:* `ros2 bag` records reception time, but `period` inside
++   `read()` (line 182) is the controller-manager's own
++   `Duration`. If the host is loaded, jitter increases per-cycle
++   `period.seconds()` and the empirical `Δt_k` deviates from 0.100 s.
++   *Mitigation:* in S2/S3 use the per-message
++   `Δt_k = stamp[k] − stamp[k−1]` from `/joint_states`, not a fixed
++   0.100 s. Reject any trial where
++   `std(Δt_k) / mean(Δt_k) > 0.05`.
++
++## 9. Deliverables
++
++- `results/bags/<trial_id>/` — one mcap rosbag per trial.
++- `results/metadata.csv` — one row per trial with the IVs.
++- `results/REPORT.md` — Figs 1–4, threshold pass/fail table, and
++  a one-paragraph verdict on H1 and H2.

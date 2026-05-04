@@ -1,0 +1,312 @@
+diff --git a/EXPERIMENT.md b/EXPERIMENT.md
+new file mode 100644
+index 0000000..e2ef02e
+--- /dev/null
++++ b/EXPERIMENT.md
+@@ -0,0 +1,306 @@
++# EXPERIMENT: Validating Forward-Euler Integration in DiffBot's Hardware Interface
++
++## 1. System Under Test (SUT)
++
++The integrator under test is the loop body in
++`example_2/hardware/diffbot_system.cpp:192`:
++
++```cpp
++hw_positions_[i] = hw_positions_[i] + period.seconds() * hw_velocities_[i];
++```
++
++inside `DiffBotSystemHardware::read()` (lines 181–204). The companion
++`write()` (lines 206–224) mirrors commands directly into the velocity state:
++`hw_velocities_[i] = hw_commands_[i]`. The integrator therefore consumes the
++velocity that was set by the **previous** `write()` (the controller_manager
++order is `read → update → write`, so the velocity state used by `read()` at
++cycle k is the command issued at cycle k−1).
++
++Relevant fixed parameters that ground the predicted bound:
++
++| Parameter | Value | Source |
++|---|---|---|
++| `controller_manager.update_rate` | **10 Hz** → Δt = 0.100 s | `example_2/bringup/config/diffbot_controllers.yaml:3` |
++| `wheel_radius` | 0.015 m | `diffbot_controllers.yaml:18` |
++| `wheel_separation` | 0.10 m | `diffbot_controllers.yaml:16` |
++| Controller type | `diff_drive_controller/DiffDriveController` | `diffbot_controllers.yaml:9` |
++| Controller `publish_rate` (odom & TF) | 50 Hz | `diffbot_controllers.yaml:24` |
++| `linear.x.max_acceleration` | 1.0 m/s² | `diffbot_controllers.yaml:43` |
++| `linear.x.max_velocity` | 1.0 m/s | `diffbot_controllers.yaml:42` |
++| `cmd_vel_timeout` | 0.5 s | `diffbot_controllers.yaml:33` |
++| `open_loop` | true (odom is fed by controller-side integration of cmd, **not** by joint_states) | `diffbot_controllers.yaml:30` |
++
++Both joints (`left_wheel_joint`, `right_wheel_joint`) declare
++`command_interface=velocity` and `state_interface=position,velocity` in
++`example_2/description/ros2_control/diffbot.ros2_control.xacro:21–30`.
++
++Bring-up: `ros2 launch ros2_control_demo_example_2 diffbot.launch.py`
++(default args: `gui:=true`, `use_mock_hardware:=false`,
++`disable_commands:=false`). **`use_mock_hardware` MUST be `false`** so that
++the C++ integrator in `diffbot_system.cpp` is exercised; setting it to true
++substitutes `mock_components/GenericSystem` (xacro line 16) which we are
++**not** testing.
++
++## 2. Hypothesis (falsifiable, quantitative)
++
++For each wheel joint *i*, given a constant commanded wheel angular velocity
++`ω_cmd_i` (rad/s) held for an interval of length `T` (s) starting after the
++controller's velocity-ramp transient, the change in the joint's reported
++position state is
++
++> **H1 (point form):** `Δq_i(T) = ω_cmd_i · T`, with absolute error bounded
++> by `|Δq_i(T) − ω_cmd_i · T| ≤ |ω_cmd_i| · Δt + ε_jitter`, where
++> Δt = 0.100 s (one controller period at 10 Hz update rate) and
++> ε_jitter ≤ 0.5 · |ω_cmd_i| · Δt accounts for the fact that
++> /joint_states is sampled by `joint_state_broadcaster` asynchronously
++> from `read()`.
++
++> **H2 (slope form):** Across a sweep of constant commands, regressing
++> `Δq_i(T)` (after subtracting the modeled ramp displacement, see §4.2) on
++> `ω_cmd_i · T` yields slope **1.0 ± 0.02** and intercept
++> **0 ± (Δt · ω_cmd_max) = ± 0.667 rad** for the largest level used,
++> with R² ≥ 0.999.
++
++> **H3 (residual form):** The cycle-by-cycle increment, computed from
++> consecutive `/joint_states` samples whose timestamps span a single
++> controller period of nominal duration Δt, satisfies
++> `(q[k] − q[k−1]) / (t[k] − t[k−1])  ≈ ω_state_i[k]`
++> with mean absolute residual ≤ 1 % of `|ω_cmd_i|`. This directly probes
++> the line `hw_positions_[i] += period.seconds() * hw_velocities_[i]`.
++
++A **refutation** is any of: a slope outside [0.98, 1.02], a residual that
++grows super-linearly with `T` (indicating drift not predicted by Euler), a
++dependence of integrated position on a confound held constant in §3.2, or
++a per-cycle residual mean > 5 % of `|ω_cmd_i|` that cannot be explained
++by sampling jitter (§5).
++
++## 3. Experimental Design
++
++### 3.1 Independent variables
++
++| IV | Levels | Rationale |
++|---|---|---|
++| **Commanded wheel angular velocity** `ω_cmd` | Derived from `cmd_vel.linear.x ∈ {0.05, 0.10, 0.25, 0.50} m/s` (with `angular.z = 0`) ⇒ `ω = v/r ∈ {3.33, 6.67, 16.67, 33.33} rad/s` | Spans an order of magnitude; all within `linear.x.max_velocity = 1.0 m/s`. |
++| **Hold duration** `T` | {2, 5, 10, 20} s | Spans 20×–200× one controller period (Δt = 0.1 s); shows whether errors grow with `T` (they should not, beyond the bounded one-step lag). |
++| **Direction** | {forward, reverse} via sign of `linear.x` | Symmetry check: integrator should be sign-agnostic. |
++
++Total runs: 4 × 4 × 2 = 32, plus 3 replicates per cell → **96 runs**.
++Each run is independent: between runs, send `linear.x = 0` and wait
++`cmd_vel_timeout = 0.5 s` before the next command, then reset the position
++baseline by reading the latest `/joint_states` value (the integrator never
++zeroes after activation, so we use **change** in position, not absolute).
++
++### 3.2 Confounds held constant (and how)
++
++| Confound | Control |
++|---|---|
++| Pure rotation of the base (would give opposing wheel signs) | Always set `cmd_vel.angular.z = 0`; verify in recorded `/cmd_vel`. |
++| Controller velocity ramp (`linear.x.max_acceleration = 1.0 m/s²`) | Either (a) **subtract** the closed-form ramp displacement (see §4.2), or (b) start logging `T` seconds **after** issuing the command, where ramp is complete (`t_ramp = v/a_max ≤ 0.5 s` for the largest level). We use (b) for primary analysis and (a) as cross-check. |
++| `controller_manager.update_rate` | Leave at the YAML default 10 Hz. Record the actual `period.seconds()` indirectly via consecutive `/joint_states` deltas; flag any cycle whose duration deviates from 0.100 s by > 20 %. |
++| Other CPU load | Run on an otherwise idle machine; close RViz by launching with `gui:=false`. |
++| Initial joint state | Each run records baseline `q_0` from `/joint_states` immediately before the command transition; report only `Δq = q(T) − q_0`. |
++| Floating-point precision (running over very long T) | Cap per-run `T ≤ 20 s` and `|ω_cmd| ≤ 33.33 rad/s` ⇒ |q| ≤ 667 rad, well inside double-precision exactness. |
++| Controller telemetry path | `open_loop: true` (yaml line 30) means `/diffbot_base_controller/odom` is **not** derived from `/joint_states`; we therefore use **`/joint_states` only** as the integrator output. We still record odom as a sanity reference. |
++
++## 4. Procedure
++
++### 4.1 Bring-up (one shell each)
++
++```bash
++# Terminal 1: launch the stack with the real (C++) hardware interface
++ros2 launch ros2_control_demo_example_2 diffbot.launch.py \
++    gui:=false use_mock_hardware:=false
++
++# Terminal 2: confirm controllers loaded
++ros2 control list_controllers
++# expect: joint_state_broadcaster active, diffbot_base_controller active
++
++# Terminal 3: confirm the right plugin is loaded (NOT mock_components)
++ros2 control list_hardware_components
++# expect: ros2_control_demo_example_2/DiffBotSystemHardware
++```
++
++### 4.2 Per-run protocol
++
++For each (ω_cmd, T, direction) cell:
++
++1. Start a bag (see §5) named `run_<v>_<T>_<dir>_<rep>.bag`.
++2. Wait 1 s with no command, then publish `cmd_vel` at 20 Hz:
++   ```bash
++   ros2 topic pub -r 20 /cmd_vel geometry_msgs/msg/TwistStamped \
++     "{header: {frame_id: ''}, twist: {linear: {x: <v>}, angular: {z: 0.0}}}"
++   ```
++   (Note: `/diffbot_base_controller/cmd_vel` is remapped to `/cmd_vel` in
++   `diffbot.launch.py:91`. `diff_drive_controller` accepts
++   `TwistStamped` as of current ros2_controllers.)
++3. Hold for `t_ramp + T + 0.5 s`, where `t_ramp = |v|/1.0 s`.
++4. Stop the publisher; publish a single `linear.x = 0` to halt.
++5. Wait `cmd_vel_timeout + 1 s = 1.5 s` for the controller to quiesce.
++6. Stop the bag.
++
++### 4.3 Reduction
++
++For each run, locate two `/joint_states` samples:
++- `t_0`: first sample with timestamp ≥ command-issue + `t_ramp`
++- `t_1`: last sample with timestamp ≤ `t_0 + T`
++
++Then `T_eff = t_1 − t_0`, `Δq_i = q_i(t_1) − q_i(t_0)`, expected
++`Δq̂_i = ω_cmd_i · T_eff` with `ω_cmd_i = sign(v) · |v| / r`.
++
++Cross-check (a) with the ramp included: integrate the closed-form ramp
++displacement `0.5 · v² / a_max · (1/r)` from command-issue to `t_0` and
++verify it matches the observed displacement during the ramp window.
++
++## 5. Topics to Record
++
++Use `ros2 bag record` with `--qos-profile-overrides-path` only if needed.
++All topics below are published by the default bring-up.
++
++| Topic | Type | Source / publish rate | Why we record it |
++|---|---|---|---|
++| `/joint_states` | `sensor_msgs/JointState` | `joint_state_broadcaster`, by default at the controller_manager `update_rate` (10 Hz) | **Primary integrator output.** Provides `position[i]` and `velocity[i]` from `hw_positions_` / `hw_velocities_` in `diffbot_system.cpp`. |
++| `/dynamic_joint_states` | `control_msgs/DynamicJointState` | `joint_state_broadcaster`, 10 Hz | Independent confirmation that joint values match `/joint_states` (helps catch broadcaster bugs). |
++| `/cmd_vel` | `geometry_msgs/TwistStamped` | published by us at 20 Hz | Records the actual command timing and value, including the precise stop transition. |
++| `/diffbot_base_controller/odom` | `nav_msgs/Odometry` | `diff_drive_controller`, 50 Hz (yaml line 24). With `open_loop: true`, this is integrated from **commands**, not from joint_states. | Sanity check: odom-derived linear distance should equal `r · mean(Δq_left, Δq_right)` only after the ramp; a mismatch flags a `cmd_vel`-ingestion bug, not an integrator bug. |
++| `/tf` | `tf2_msgs/TFMessage` | `diff_drive_controller`, 50 Hz | Same as odom; secondary sanity. |
++| `/rosout` | `rcl_interfaces/Log` | event-driven | Captures the `RCLCPP_INFO_THROTTLE` lines from `read()`/`write()` (every 500 ms; `diffbot_system.cpp:200,220`) for post-hoc cross-check. |
++
++Recording command:
++
++```bash
++ros2 bag record -o run_<id> \
++    /joint_states /dynamic_joint_states /cmd_vel \
++    /diffbot_base_controller/odom /tf /rosout
++```
++
++Sample-rate rationale: 10 Hz on `/joint_states` is the **maximum useful
++rate** for the hypothesis because the underlying integrator only fires once
++per controller period. Recording at higher rates would oversample without
++providing new integrator state. We record `/cmd_vel` at 20 Hz to bracket
++each control cycle with at least one command sample so the effective
++command-on time is reconstructable to ≤ 50 ms.
++
++## 6. Quantitative Success Thresholds
++
++A run-cell **passes** if all of the following hold (units explicit):
++
++| Metric | Threshold | Units |
++|---|---|---|
++| Per-cell mean `Δq − ω_cmd · T_eff` | within `[−|ω_cmd| · Δt, +|ω_cmd| · Δt]` = `[−0.1·ω_cmd, +0.1·ω_cmd]` | rad |
++| Per-cell std-dev across 3 replicates | ≤ `0.5 · |ω_cmd| · Δt` = `0.05 · |ω_cmd|` | rad |
++| Symmetry: `|Δq_forward + Δq_reverse|` for matched (|v|, T) | ≤ `0.1 · |ω_cmd| · Δt` | rad |
++| Slope of `Δq` vs `ω_cmd · T_eff` regression (all 96 runs) | 1.000 ± 0.02 | dimensionless |
++| Regression intercept | within ±0.667 rad (= Δt · ω_cmd_max) | rad |
++| Regression R² | ≥ 0.999 | dimensionless |
++| Mean per-cycle residual `\|(q[k]−q[k−1])/(t[k]−t[k−1]) − ω_state[k]\|` | ≤ `0.01 · |ω_cmd|` | rad/s |
++| Δt observed: median of `t[k]−t[k−1]` on `/joint_states` | 0.100 s ± 20 % | s |
++
++H1/H2/H3 are **refuted** if any threshold above is violated outside
++sampling-jitter explanation (i.e., the violation does not shrink when
++runs are filtered to cycles whose `t[k]−t[k−1]` is within 5 % of 0.100 s).
++
++## 7. Visualization Plan
++
++Produce the following plots from the bagged data (e.g., with
++`rosbag2_py` + matplotlib, one notebook per analysis):
++
++1. **Per-run trajectory** (one figure per run):
++   - x-axis: time since command issue (s)
++   - y-axis (left): `q_left`, `q_right` from `/joint_states` (rad)
++   - y-axis (right, twin): commanded `v` from `/cmd_vel` (m/s)
++   - Overlay: dashed line `q̂(t) = ω_cmd · max(0, t − t_ramp)` shifted by
++     `q_0`. **Inspect:** the dashed line should sit on top of the data
++     after `t_ramp`; deviation visible to the eye refutes H1.
++
++2. **Slope plot** (one figure across all 96 runs):
++   - x-axis: `ω_cmd · T_eff` (rad)
++   - y-axis: measured `Δq` (rad)
++   - One color per `|v|` level, one marker per direction.
++   - Overlay: y = x line, fitted regression, ±`Δt · |ω_cmd|` error band.
++   - **Inspect:** points hug y = x; band envelopes all points; fit slope
++     and R² match thresholds in §6.
++
++3. **Per-cycle residual histogram**:
++   - Histogram of `(Δq_per_cycle / Δt_per_cycle) − ω_state` across all
++     cycles in all runs, faceted by `|ω_cmd|` level.
++   - **Inspect:** distribution centered at 0 with tails inside the
++     ±5 %·|ω_cmd| band. A bimodal or skewed distribution suggests a
++     systematic phase error between `/joint_states` and `read()`.
++
++4. **Cycle period plot**:
++   - Time series of `t[k] − t[k−1]` for `/joint_states`.
++   - **Inspect:** flat at ~0.100 s with bounded jitter; spikes correlate
++     with system load (cross-reference `/rosout`).
++
++5. **Open-loop odometry vs. wheel-integrated distance**:
++   - Plot `odom.pose.position.x` vs. `r · 0.5·(q_left + q_right)`.
++   - With `open_loop: true`, both come from integrating commands (one
++     pre-controller, one post-hardware), so they should agree after the
++     ramp. **Inspect:** divergence here implicates the controller stack,
++     not the integrator under test, and is grounds for re-running with
++     mitigations from §8.
++
++## 8. Failure Modes & Mitigations
++
++1. **Velocity ramp masks the test.** The `diff_drive_controller`'s
++   `linear.x.max_acceleration = 1.0 m/s²` (yaml line 43) means the wheel
++   command is *not* a step. If we naively compare `Δq` to `ω_cmd · T`
++   over the **full** command interval, we will see a constant negative
++   offset of `0.5 · ω_cmd² · r / a_max`.
++   - *Mitigation:* trim the analysis window to start at
++     `t_0 = t_cmd + t_ramp` (§4.2), and additionally cross-check by
++     subtracting the closed-form ramp displacement. Independently, a
++     run with `v = 0.05 m/s` has `t_ramp = 0.05 s < Δt`, so the ramp is
++     contained in a single cycle and serves as a baseline.
++
++2. **`/joint_states` publish rate is not what we think.**
++   `joint_state_broadcaster`'s effective rate equals
++   `controller_manager.update_rate` only if no `publish_rate` is set on
++   the broadcaster (none is, in the yaml). If a future change adds one,
++   the cycle-period plot in §7.4 will not be flat at 0.1 s.
++   - *Mitigation:* the success thresholds use `T_eff` measured from
++     observed timestamps, never the nominal `T`. The cycle-period plot
++     is a gating check; if the median Δt is not within 20 % of 0.100 s,
++     halt and reconfigure before proceeding.
++
++3. **`cmd_vel_timeout` (0.5 s) zeros the command mid-run.** If our
++   publisher rate (20 Hz) drops below 2 Hz for any reason (CPU spike,
++   ROS DDS hiccup), the controller will set `v = 0`, the integrator
++   will silently produce a flat segment, and the slope test will fail
++   in a way that looks like an integrator bug.
++   - *Mitigation:* always publish at ≥ 20 Hz (10× the timeout floor),
++     and overlay `/cmd_vel` on the per-run trajectory plot (§7.1) so
++     any zero gap is visually obvious. Reject runs with command gaps
++     > 100 ms.
++
++4. **Wrong hardware plugin loaded (silent).** If `use_mock_hardware:=true`
++   is left set (e.g., in a saved launch file), the integrator under
++   test never runs; instead `mock_components/GenericSystem` (with
++   `calculate_dynamics: true`, see
++   `diffbot.ros2_control.xacro:14–20`) provides similar-looking output
++   and the experiment trivially "passes" while testing nothing.
++   - *Mitigation:* every session, run `ros2 control list_hardware_components`
++     and grep for `DiffBotSystemHardware`; abort if not present. Also
++     scrape `/rosout` for the throttled `"Reading states:"` log line
++     emitted from `diffbot_system.cpp:200`, which is unique to this
++     plugin.
++
++5. **TwistStamped vs Twist message-type mismatch.** Older
++   `diff_drive_controller` builds subscribed to `geometry_msgs/Twist`;
++   current builds expect `TwistStamped`. A mismatch means commands are
++   silently dropped and the integrator sees zero velocity.
++   - *Mitigation:* before the first run, send one test command and
++     inspect `/diffbot_base_controller/odom` for non-zero
++     `twist.twist.linear.x`; if zero, switch to `Twist` (no header
++     field) in the publish command. Type can also be confirmed with
++     `ros2 topic info -v /cmd_vel`.
++
++6. **Position state never gets initialized (NaN).** `on_activate()`
++   (`diffbot_system.cpp:147–156`) initializes positions to 0 only if
++   they are NaN. If `on_activate` is somehow re-entered after a
++   non-NaN value, positions retain their old values — usually fine, but
++   means `Δq` semantics depend on never trusting absolute `q`.
++   - *Mitigation:* the protocol only ever uses `Δq = q(t_1) − q(t_0)`
++     (§4.3); absolute position is reported but never compared to a
++     constant. Additionally, log `/joint_states` for 1 s before each
++     command to confirm `q` is finite and constant before we move.

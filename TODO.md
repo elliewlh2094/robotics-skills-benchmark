@@ -9,21 +9,26 @@ Lightweight operational pointer. Ephemeral on purpose — the durable references
 - [`docs/candidate-repos.md`](docs/candidate-repos.md) — investigated task-repo candidates
 - [`docs/result-json-reference.md`](docs/result-json-reference.md) + [`harness/schemas/result.schema.yaml`](harness/schemas/result.schema.yaml) — canonical pair for `result.json` field shapes (validated on every write)
 
-> **Last updated:** 2026-05-03.
+> **Last updated:** 2026-05-05 (T1.5 complete; **Phase 2 calibration gate triggered** — see `analysis/baseline-v0.1.0.md`).
 
 ---
 
 ## ▶ Where to resume
 
-**T1.5 — run V1 baseline (3 trials at unmodified fork).** Full task definition at [`docs/v1-tasks.md`](docs/v1-tasks.md).
+**Rubric calibration (NEW — pre-T2.1).** T1.5 completed; all three formal baseline runs at `v0.1.0` produced `overall_mean: 3.0`, `overall_stdev: 0.0` across all 7 dimensions on all 9 trials (3 runs × 3 trials). The Phase 2 calibration gate has triggered. Phase 2 (T2.1–T2.4) is paused.
 
-Prereqs done: scope-check + rubric scorer landed in T1.4 (scoring section of `result.json` now populated end-to-end via `harness/scope_check.py` and `harness/score_rubric.py`; the real `claude --bare --json-schema` judge subprocess is exercised here for the first time).
+Full T1.5 forensics: [`analysis/baseline-v0.1.0.md`](analysis/baseline-v0.1.0.md). Calibration directions are listed there in increasing cost; cheapest+most informative is anchor-tightening + a known-bad reference deliverable to verify discrimination.
 
-Steps:
-1. Tag `elliewlh2094/robotics-agent-skills` HEAD as `v0.1.0` in the plugin repo.
-2. Run `harness/run_experiment.py` against `diffbot-experiment-design` at that tag, three times (`baseline-1`, `baseline-2`, `baseline-3`).
-3. Sanity-check each `result.json` and that an `EXPERIMENT.md` was actually produced.
-4. Compute pooled per-dimension stdev across the three runs and document in `analysis/baseline-v0.1.0.md`. **This stdev is the noise floor against which Phase 2's plugin delta is judged.**
+Steps to resume:
+1. **Decide calibration approach.** Pick from `analysis/baseline-v0.1.0.md` §"Calibration directions to consider" (anchor-tightening, new dimensions, adversarial judge prompt, cross-model judging, blind comparison). User decision required before edits.
+2. Apply rubric changes (likely in `tasks/instances/diffbot-experiment-design/rubric.md`).
+3. Re-run the baseline as `baseline-c1-{1,2,3}` (the `c1` denotes calibration revision 1; `v0.1.0` plugin_tag stays the same since the plugin didn't change). The previous `baseline-{1,2,3}` runs remain on disk for forensic comparison.
+4. Re-evaluate the gate. Proceed to T2.1 only when at least one dimension shows `mean < 3.0` OR `stdev > 0`.
+
+Phase 1 task closure status:
+- T1.1, T1.2, T1.3, T1.4, T1.4a: ✓ complete
+- T1.5: ✓ complete (per acceptance criteria — the analysis doc is the deliverable; it correctly documents that the noise floor is degenerate)
+- Checkpoint A: 🟡 partial — three runs landed and variance documented, but the "pause and review" guard fired. Cannot mark Checkpoint A passed until calibration changes the picture.
 
 ---
 
@@ -31,8 +36,8 @@ Steps:
 
 | Phase | Status | Tasks done | Tasks pending |
 |---|---|---|---|
-| Phase 1 (Foundation) | 🟡 in progress | T1.1, T1.2, T1.3, T1.4, T1.4a | T1.5 |
-| Phase 2 (First plugin iteration) | ⏳ blocked by Checkpoint A | — | T2.1–T2.4 |
+| Phase 1 (Foundation) | 🟢 tasks done; Checkpoint A pending calibration | T1.1, T1.2, T1.3, T1.4, T1.4a, T1.5 | (rubric calibration, then re-run as `baseline-c1-*`) |
+| Phase 2 (First plugin iteration) | 🛑 paused by Phase 2 calibration gate | — | T2.1–T2.4 (paused) |
 | Phase 3 (TDD + debugging) | ⏳ post-V1 | — | T3.1–T3.5 |
 | Phase 4 (Spec + planning) | ⏳ post-V1 | — | T4.1–T4.4 |
 
@@ -49,7 +54,7 @@ All architectural decisions are recorded in [`docs/decisions/`](docs/decisions/)
 | Hybrid scoring: automated + LLM-judge rubric (N=3) + human spot-check | [0003](docs/decisions/0003-hybrid-scoring.md) |
 | V1 ships only experiment-design; debugging is Phase 3, spec/planning Phase 4 | [0004](docs/decisions/0004-v1-staged-activities.md) |
 | One logical change per plugin tag | [0005](docs/decisions/0005-one-change-per-plugin-tag.md) |
-| Headless `claude -p` for runner and judge; `--tools` (not `--allowedTools`) for hard whitelist; `--max-turns` ceiling | [0006](docs/decisions/0006-headless-claude-code-for-runner-and-judge.md) |
+| Headless `claude -p` for runner and judge; `--tools` + `--allowedTools` (complementary: restrict + auto-approve) with the same task whitelist; `--max-turns` ceiling | [0006](docs/decisions/0006-headless-claude-code-for-runner-and-judge.md) (amended 2026-05-05) |
 | V1 sim_engine relaxed (mock hw OK); humble branch pinned; long-term Gazebo direction unchanged | [0007](docs/decisions/0007-v1-sim-engine-relaxation.md) |
 | `result.json` canonical pair: schema (machine, validated on every write) + reference doc (human); 5 prior locations now point at this pair | [0008](docs/decisions/0008-result-json-schema-and-reference.md) |
 
@@ -61,3 +66,5 @@ All architectural decisions are recorded in [`docs/decisions/`](docs/decisions/)
 2. **No automated cleanup of stale worktrees** under `/tmp/exp-scratch/`. Worktrees from failed runs persist by design (ADR-0002), but no periodic prune is scheduled. Add a `harness/prune.py` once we have >10 stale entries.
 3. **Judge-drift detection** requires human spot-check 1-in-5 (ADR-0003), but no tooling exists yet to surface "which results need human review." Schedule for Phase 5 cadence work, not blocking V1.
 4. **Open questions Q1–Q4** in [`docs/v1-plan.md`](docs/v1-plan.md) §"Open questions" — resolved during execution rather than upfront.
+5. **Judge token/cost not captured.** `result.json` records `judge_calls` (count) but not the per-trial token usage or `cost_usd` that `claude --json-schema` returns. Surfaced during T1.5 dry-runs when extracting cost from artifacts. `score_rubric.py` discards the judge subprocess's `usage`/`total_cost_usd`. Phase 5 instrumentation work; non-blocking for V1.
+6. **Rubric ceiling concern (calibration gate for Phase 2).** Dry-run #2 produced `overall_mean: 3.0`, `overall_stdev: 0.0` across all 7 dimensions. If the formal baselines reproduce this saturation, Phase 2 must pause for rubric calibration — see TODO step 4 above and the saved feedback memory `feedback_phase2_rubric_calibration_gate.md`.
