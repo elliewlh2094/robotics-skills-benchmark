@@ -206,6 +206,64 @@ After both modules exist, `harness/run_experiment.py` is updated to call them in
 
 ---
 
+#### Task T1.6: Render baseline experiments to human-readable Markdown
+
+**Description:** After T1.5 produced `overall_mean: 3.0`, `overall_stdev: 0.0` across all 7 dimensions on 9 trials, the saved feedback `feedback_phase2_rubric_calibration_gate.md` triggered the calibration gate. Before deciding *how* to recalibrate, the user needs to manually inspect the actual agent outputs against the actual judge rationales — but `result.json`, `transcript.md`, and `diff.patch` are not human-readable in their raw form. Build a deterministic Markdown renderer (`harness/render_report.py`) that converts each experiment's three artifacts into one `report.md` per experiment, containing run identity, the agent's `## result` prose, the restored deliverable (diff headers + leading `+` stripped), the rubric score table, judge rationales per trial, and a manual-review workspace section the user fills out by hand. The renderer is read-only over the source files: no scores recomputed, no judge re-runs, no rubric edits. Auto-rendered content sits between `<!-- BEGIN AUTO -->` and `<!-- END AUTO -->` markers; everything outside (including the manual review section) is preserved byte-for-byte across re-renders.
+
+**Acceptance criteria:**
+- [ ] `harness/render_report.py` exists and supports `<experiment-dir-or-id>`, `--all`, `--force`, `--stdout`
+- [ ] Output written to `experiments/<id>/report.md` co-located with source artifacts
+- [ ] Re-rendering preserves user edits to the `## Manual review` section byte-for-byte
+- [ ] All edge cases handled: empty `files_modified` (`status=no-deliverable`), missing `## result` H2, modified/deleted/binary diff entries, missing source files. Each emits a `>` warning block and continues rendering.
+- [ ] `experiments/2026-05-04_v0.1.0_diffbot-experiment-design_baseline-{1,2,3}/report.md` generated and reviewed by the user
+
+**Verification:**
+- [ ] `python3 -m pytest harness/tests/test_render_report.py -v` passes (round-trip integrity, edge cases, marker preservation, parametrized smoke against the three real baselines)
+- [ ] **Round-trip integrity test (load-bearing):** rendered `Restored deliverable` byte-matches the original `EXPERIMENT.md`
+- [ ] User opens each `report.md` and confirms readability + fills in `## Manual review`
+
+**Dependencies:** T1.5
+
+**Files likely touched:**
+- `harness/render_report.py` (new)
+- `harness/tests/test_render_report.py` (new)
+- `experiments/2026-05-04_v0.1.0_diffbot-experiment-design_baseline-{1,2,3}/report.md` (generated)
+
+**Estimated scope:** Small-medium (~500-line renderer + ~400-line test suite + fixtures; rendering is deterministic so most of the work is parsing and section assembly)
+
+---
+
+#### Task T1.7: Judge-transcript persistence + rubric calibration
+
+Two halves under one task ID, executable in either order. T1.7a is plumbing and can land in parallel with the user's T1.6 review; T1.7b's substance is decided *after* the review.
+
+**T1.7a — Judge-transcript persistence (plumbing):** Closes TODO.md issue 5. The judge subprocess in `harness/score_rubric.py:subprocess_judge_runner` currently parses the structured output but discards `total_cost_usd`, `usage`, the raw stdout wrapper, and `stderr`. T1.7a captures all of that to per-trial sidecars at `experiments/<id>/judge-trial-{1,2,3}.json`, with a small `{path, total_cost_usd}` reference in `result.json` under `scoring.rubric_scores.per_trial[i].judge_io`. Schema gains an optional `judge_io` field (no `schema_version` bump per ADR-0008).
+
+**T1.7b — Rubric anchor calibration (process; substance TBD):** After the user reviews the T1.6 reports, pick one calibration direction from `analysis/baseline-v0.1.0.md` §"Calibration directions to consider", edit `tasks/instances/diffbot-experiment-design/rubric.md` accordingly, and re-run the baseline as `baseline-c1-{1,2,3}` (`c1` = calibration revision 1; `plugin_tag` stays `v0.1.0`). Gate passes when at least one dimension shows `mean < 3.0` OR `stdev > 0` across the three runs. If the gate still fails, escalate with `c2` (bounded at three calibration revisions). Append outcomes to `analysis/baseline-v0.1.0.md` under a new `## Calibration log`.
+
+**Acceptance criteria:**
+- [ ] **T1.7a:** schema accepts the new optional `judge_io` field (no `schema_version` bump)
+- [ ] **T1.7a:** `subprocess_judge_runner` captures stdout wrapper, stderr, returncode, duration, cost, usage; `score_rubric` writes `judge-trial-{i}.json` to `experiment_dir` and stamps `judge_io = {path, total_cost_usd}` on each per-trial record
+- [ ] **T1.7a:** sidecars are NOT retroactively applied to existing T1.5 baselines (re-running would change `started_at` and contaminate forensics)
+- [ ] **T1.7b:** rubric calibration direction picked and documented; rubric edits cite `analysis/baseline-v0.1.0.md`
+- [ ] **T1.7b:** `baseline-c1-{1,2,3}` runs land with `judge-trial-*.json` sidecars (T1.7a path)
+- [ ] **T1.7b:** Phase 2 calibration gate passes (at least one dimension's `mean < 3.0` OR `stdev > 0` across the three runs)
+
+**Verification:**
+- [ ] **T1.7a:** `python3 -m pytest harness/tests/test_score_rubric.py harness/tests/test_validate_result.py` passes — including a sidecar-writing test (fake judge_runner) and a schema acceptance/rejection pair for `judge_io`
+- [ ] **T1.7a:** live smoke at the first `c1` trial — confirm `judge-trial-{1,2,3}.json` exist and `result.json` references them via `judge_io.path`
+- [ ] **T1.7b:** `analysis/baseline-v0.1.0.md` has a `## Calibration log` entry recording the gate verdict for `c1` (and `c2`/`c3` if needed)
+
+**Dependencies:** T1.6 (T1.7b consumes the manual-review notes)
+
+**Files likely touched:**
+- T1.7a: `harness/score_rubric.py`, `harness/run_experiment.py`, `harness/schemas/result.schema.yaml`, `harness/tests/test_score_rubric.py`, `harness/tests/test_validate_result.py`, `docs/result-json-reference.md`
+- T1.7b: `tasks/instances/diffbot-experiment-design/rubric.md` (anchor edits — content TBD), `analysis/baseline-v0.1.0.md` (append `## Calibration log`), `experiments/.../baseline-c1-{1,2,3}/`
+
+**Estimated scope:** T1.7a small (well-scoped plumbing); T1.7b small (mostly waiting for runs and documenting); content of rubric edits depends on review
+
+---
+
 #### Checkpoint A: Foundation — Loop runs end-to-end on baseline
 
 - [ ] One full experiment loop produces a `result.json` with rubric + scope-check + reproducibility tuple
