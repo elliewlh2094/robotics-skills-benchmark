@@ -189,6 +189,7 @@ present:
 | `overall_recomputed` | number (0–3) | Mean of `scores` values, computed by us — not trusted from the judge. |
 | `overall_judge_reported` | number \| null | The judge's claimed overall. Preserved for audit; **not** aggregated. Spotting judges that disagree with their own arithmetic is one signal of judge drift. |
 | `rationale` | string | 2-4 sentences from the judge citing strengths/weaknesses of the deliverable. |
+| `judge_io` | object \| absent | **Optional** (T1.7a). Reference to the per-trial sidecar containing the raw judge subprocess output. Absent on T1.5 baselines that predate sidecar capture. Per ADR-0008, optional additions don't bump `schema_version`. Shape: `{path: string, total_cost_usd: number \| null}`. The sidecar lives at `experiments/<id>/<path>` and contains the full stdout wrapper, stderr, returncode, duration, cost, and usage record — the heavy data is kept out of `result.json` itself to keep validation fast and the file readable. |
 
 **Failure shape** — judge subprocess errored before completing all trials.
 The runner records this rather than raising, so transcript + diff +

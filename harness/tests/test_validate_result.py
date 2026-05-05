@@ -363,3 +363,74 @@ def test_wrong_schema_version_rejected():
     r = _base_partial(schema_version=2)
     with pytest.raises(ResultValidationError):
         validate_result(r)
+
+
+# ---------------------------------------------------------------------------
+# T1.7a — optional judge_io reference on per_trial entries
+# ---------------------------------------------------------------------------
+
+def test_per_trial_with_judge_io_validates():
+    """The optional judge_io ref (path + total_cost_usd) is accepted on per_trial."""
+    r = _base_success()
+    for i, trial in enumerate(r["scoring"]["rubric_scores"]["per_trial"], start=1):
+        trial["judge_io"] = {
+            "path": f"judge-trial-{i}.json",
+            "total_cost_usd": 0.0123,
+        }
+    validate_result(r)
+
+
+def test_per_trial_without_judge_io_still_validates():
+    """Existing T1.5 baselines (no judge_io) must continue to validate."""
+    r = _base_success()
+    for trial in r["scoring"]["rubric_scores"]["per_trial"]:
+        assert "judge_io" not in trial
+    validate_result(r)
+
+
+def test_per_trial_with_null_total_cost_validates():
+    """total_cost_usd may be null when the wrapper doesn't surface a cost."""
+    r = _base_success()
+    r["scoring"]["rubric_scores"]["per_trial"][0]["judge_io"] = {
+        "path": "judge-trial-1.json",
+        "total_cost_usd": None,
+    }
+    validate_result(r)
+
+
+def test_per_trial_judge_io_missing_path_rejected():
+    r = _base_success()
+    r["scoring"]["rubric_scores"]["per_trial"][0]["judge_io"] = {
+        "total_cost_usd": 0.012,
+    }
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
+
+
+def test_per_trial_judge_io_non_string_path_rejected():
+    r = _base_success()
+    r["scoring"]["rubric_scores"]["per_trial"][0]["judge_io"] = {
+        "path": 123,
+        "total_cost_usd": 0.012,
+    }
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
+
+
+def test_per_trial_judge_io_extra_field_rejected():
+    """additionalProperties: false guards the small reference object."""
+    r = _base_success()
+    r["scoring"]["rubric_scores"]["per_trial"][0]["judge_io"] = {
+        "path": "judge-trial-1.json",
+        "total_cost_usd": 0.012,
+        "extra": "nope",
+    }
+    with pytest.raises(ResultValidationError):
+        validate_result(r)
+
+
+def test_schema_version_unchanged_after_t17a():
+    """Per ADR-0008, optional additions don't bump schema_version."""
+    r = _base_success()
+    assert r["schema_version"] == 1
+    validate_result(r)

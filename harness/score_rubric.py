@@ -23,15 +23,23 @@ this module.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
 import shutil
 import statistics
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 
 JudgeRunner = Callable[[str], dict]
+
+# Per-trial sidecar filename (T1.7a). Stored alongside result.json in the
+# experiment directory; referenced from `result.json.scoring.rubric_scores
+# .per_trial[i].judge_io.path` so the heavy data (raw stdout wrapper,
+# stderr, full usage record) lives outside result.json itself.
+JUDGE_TRIAL_FILENAME_TEMPLATE = "judge-trial-{i}.json"
 
 
 class JudgeInvocationError(RuntimeError):
@@ -188,18 +196,91 @@ def score_rubric(
     *,
     n_trials: int = 3,
     judge_runner: JudgeRunner | None = None,
+    experiment_dir: Path | None = None,
 ) -> dict:
-    """Score `deliverable` against `rubric_text`. Returns aggregated trials."""
+    """Score `deliverable` against `rubric_text`. Returns aggregated trials.
+
+    When `experiment_dir` is provided AND the runner returns a "rich" record
+    (one with a `payload` key — see `subprocess_judge_runner`), each trial's
+    full subprocess output is persisted to
+    `experiment_dir/judge-trial-{i}.json` and a `judge_io = {path,
+    total_cost_usd}` reference is stamped onto the corresponding per-trial
+    record. When `experiment_dir` is None, behavior is unchanged from before
+    T1.7a: the runner's return value is treated as the bare payload and no
+    sidecars are written. Test fakes that return bare payloads continue to
+    work either way.
+    """
     if n_trials < 1:
         raise ValueError(f"n_trials must be ≥1; got {n_trials}")
     runner = judge_runner if judge_runner is not None else subprocess_judge_runner
 
     prompt = build_judge_prompt(rubric_text, deliverable)
-    per_trial = [
-        _validate_and_recompute(runner(prompt), i)
-        for i in range(n_trials)
-    ]
+    per_trial: list[dict] = []
+    for i in range(n_trials):
+        ret = runner(prompt)
+        payload = _bare_payload(ret)
+        trial = _validate_and_recompute(payload, i)
+        if experiment_dir is not None and _is_rich(ret):
+            sidecar_path = _write_sidecar(experiment_dir, i, ret)
+            trial["judge_io"] = {
+                "path": sidecar_path.name,
+                "total_cost_usd": _extract_cost(ret),
+            }
+        per_trial.append(trial)
     return _aggregate(per_trial)
+
+
+# ---------------------------------------------------------------------------
+# Rich-record helpers (T1.7a)
+# ---------------------------------------------------------------------------
+
+def _is_rich(ret: dict) -> bool:
+    """True if `ret` is a rich JudgeTrial record (vs. a bare payload)."""
+    return isinstance(ret, dict) and isinstance(ret.get("payload"), dict)
+
+
+def _bare_payload(ret: dict) -> dict:
+    """Extract the parsed judge payload regardless of runner shape."""
+    return ret["payload"] if _is_rich(ret) else ret
+
+
+def _extract_cost(rich: dict) -> float | None:
+    wrapper = rich.get("wrapper") or {}
+    cost = wrapper.get("total_cost_usd")
+    return cost if isinstance(cost, (int, float)) else None
+
+
+def _redact_schema_in_cmd(cmd: list[str]) -> list[str]:
+    """Replace the --json-schema body with a SHA pointer to keep sidecars compact."""
+    out = list(cmd)
+    try:
+        i = out.index("--json-schema")
+        body = out[i + 1]
+        sha = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+        out[i + 1] = f"<sha256:{sha}>"
+    except (ValueError, IndexError):
+        pass
+    return out
+
+
+def _write_sidecar(experiment_dir: Path, trial_index: int, rich: dict) -> Path:
+    """Persist one trial's full judge IO; return the sidecar path."""
+    cmd = rich.get("cmd") or []
+    wrapper = rich.get("wrapper") or {}
+    sidecar = {
+        "trial_index": trial_index + 1,
+        "cmd": _redact_schema_in_cmd(cmd),
+        "stdout_wrapper": wrapper,
+        "stderr": rich.get("stderr", ""),
+        "returncode": rich.get("returncode"),
+        "duration_s": rich.get("duration_s"),
+        "total_cost_usd": _extract_cost(rich),
+        "usage": wrapper.get("usage"),
+    }
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+    path = experiment_dir / JUDGE_TRIAL_FILENAME_TEMPLATE.format(i=trial_index + 1)
+    path.write_text(json.dumps(sidecar, indent=2, sort_keys=True))
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -257,16 +338,33 @@ def _build_judge_cmd(prompt: str) -> list[str]:
     ]
 
 
-def subprocess_judge_runner(prompt: str, *, timeout_s: int = DEFAULT_JUDGE_TIMEOUT_S) -> dict:
-    """Invoke `claude` to score a deliverable. Returns parsed JSON payload.
+def subprocess_judge_runner(
+    prompt: str, *, timeout_s: int = DEFAULT_JUDGE_TIMEOUT_S
+) -> dict:
+    """Invoke `claude` to score a deliverable. Returns a rich JudgeTrial record.
 
     Per ADR-0009: judge runs without --bare in an isolated cwd. This excludes
     the project-local agent-skills plugin (cwd outside repo) while keeping the
-    user's existing OAuth login (keychain). --tools "" + --max-turns 1 close
-    the tool surface; --disable-slash-commands prevents skill auto-resolution;
-    --no-session-persistence prevents cross-call state.
+    user's existing OAuth login (keychain). --allowedTools "" + --max-turns 3
+    close the tool surface; --disable-slash-commands prevents skill
+    auto-resolution; --no-session-persistence prevents cross-call state.
+
+    Return shape (T1.7a): a "rich" record with the parsed payload alongside
+    the raw subprocess outputs needed for sidecar capture. `score_rubric`
+    extracts `payload` for validation and (when given an `experiment_dir`)
+    writes the rest to `experiment_dir/judge-trial-{i}.json`.
+
+        {
+            "payload": {scores, overall, rationale},
+            "wrapper": <full claude stdout JSON>,
+            "stderr": <captured stderr>,
+            "returncode": 0,
+            "duration_s": <subprocess wall-clock seconds>,
+            "cmd": [...],  # argv as passed to subprocess.run
+        }
     """
     cmd = _build_judge_cmd(prompt)
+    start = time.perf_counter()
     try:
         proc = subprocess.run(
             cmd,
@@ -279,6 +377,7 @@ def subprocess_judge_runner(prompt: str, *, timeout_s: int = DEFAULT_JUDGE_TIMEO
         raise JudgeInvocationError(f"claude judge timed out after {timeout_s}s") from e
     except FileNotFoundError as e:
         raise JudgeInvocationError("`claude` binary not found on PATH") from e
+    duration_s = time.perf_counter() - start
 
     if proc.returncode != 0:
         raise JudgeInvocationError(
@@ -296,13 +395,22 @@ def subprocess_judge_runner(prompt: str, *, timeout_s: int = DEFAULT_JUDGE_TIMEO
     # (the `result` field gets the model's plain-text accompaniment). Older
     # versions may inline JSON in `result`; handle both.
     if "structured_output" in wrapper:
-        return wrapper["structured_output"]
-    payload = wrapper.get("result", wrapper)
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except json.JSONDecodeError as e:
-            raise JudgeInvocationError(
-                f"claude judge `result` field is not JSON: {payload[:500]!r}"
-            ) from e
-    return payload
+        payload = wrapper["structured_output"]
+    else:
+        payload = wrapper.get("result", wrapper)
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError as e:
+                raise JudgeInvocationError(
+                    f"claude judge `result` field is not JSON: {payload[:500]!r}"
+                ) from e
+
+    return {
+        "payload": payload,
+        "wrapper": wrapper,
+        "stderr": proc.stderr,
+        "returncode": proc.returncode,
+        "duration_s": duration_s,
+        "cmd": cmd,
+    }

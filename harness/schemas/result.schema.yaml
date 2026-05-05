@@ -312,6 +312,26 @@ properties:
                       type: ["number", "null"]
                     rationale:
                       type: string
+                    judge_io:
+                      # Optional reference to the per-trial judge sidecar at
+                      # experiments/<id>/judge-trial-{i}.json (see T1.7a).
+                      # Absent on T1.5 baselines that predate sidecar capture.
+                      # Per ADR-0008, optional additions don't bump schema_version.
+                      type: object
+                      additionalProperties: false
+                      required: [path, total_cost_usd]
+                      properties:
+                        path:
+                          type: string
+                          description: |
+                            Filename of the sidecar relative to the experiment
+                            directory (e.g., "judge-trial-1.json").
+                        total_cost_usd:
+                          type: ["number", "null"]
+                          description: |
+                            Extracted from the wrapper for convenience; the
+                            authoritative copy lives in the sidecar's
+                            `stdout_wrapper.total_cost_usd`.
               mean:
                 type: object
                 additionalProperties: { type: number }

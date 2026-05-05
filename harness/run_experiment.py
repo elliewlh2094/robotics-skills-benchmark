@@ -516,6 +516,7 @@ def compute_scoring(
     *,
     n_trials: int = 3,
     judge_runner: Callable[[str], dict] | None = None,
+    experiment_dir: Path | None = None,
 ) -> tuple[dict, int]:
     """Build the `scoring` section of result.json + the judge_calls count.
 
@@ -523,6 +524,13 @@ def compute_scoring(
     one. Judge failures are caught and recorded into
     `scoring.rubric_scores.error` rather than raised — a noisy judge
     shouldn't lose the rest of the experiment's forensics.
+
+    When `experiment_dir` is provided, per-trial judge subprocess output is
+    persisted to `experiment_dir/judge-trial-{i}.json` (T1.7a). Each
+    per-trial record in `rubric_scores.per_trial` gains a `judge_io = {path,
+    total_cost_usd}` reference. Existing T1.5 baselines do NOT get
+    backfilled — sidecar capture takes effect from the first run after
+    T1.7a lands.
 
     Returns (scoring_dict, judge_calls). `judge_calls` is `n_trials` when the
     rubric scorer ran successfully, 0 otherwise (no rubric configured, or the
@@ -551,6 +559,7 @@ def compute_scoring(
                 deliverable_text,
                 n_trials=n_trials,
                 judge_runner=judge_runner,
+                experiment_dir=experiment_dir,
             )
             judge_calls = n_trials
         except (JudgeInvocationError, FileNotFoundError, OSError) as e:
@@ -753,7 +762,9 @@ def run(
         #    captured into scoring.rubric_scores.error so we still have
         #    transcript + diff + scope-check on disk for debugging.
         deliverable_text = gather_deliverable(task_worktree, files_modified, scope_files)
-        scoring, judge_calls = compute_scoring(task, diff_text, deliverable_text)
+        scoring, judge_calls = compute_scoring(
+            task, diff_text, deliverable_text, experiment_dir=exp_dir
+        )
         final_result["scoring"] = scoring
         final_result["judge_calls"] = judge_calls
 

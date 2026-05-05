@@ -12,13 +12,17 @@ from pathlib import Path
 
 import pytest
 
+import json
+
 from harness.score_rubric import (
     JUDGE_OUTPUT_SCHEMA,
+    JUDGE_TRIAL_FILENAME_TEMPLATE,
     JudgeInvocationError,
     _build_judge_cmd,
     _judge_cwd,
     build_judge_prompt,
     score_rubric,
+    subprocess_judge_runner,
 )
 
 
@@ -300,3 +304,120 @@ def test_integer_valued_float_is_accepted_and_stored_as_int():
     result = score_rubric("r", "d", n_trials=1, judge_runner=judge)
     assert result["per_trial"][0]["scores"] == {"clarity": 2, "brevity": 3}
     assert all(isinstance(v, int) for v in result["per_trial"][0]["scores"].values())
+
+
+# ---------------------------------------------------------------------------
+# T1.7a: judge-transcript persistence (sidecars)
+# ---------------------------------------------------------------------------
+
+def _rich_sequence_judge(payloads: list[dict], wrappers: list[dict] | None = None):
+    """Fake runner that returns the rich JudgeTrial shape (T1.7a)."""
+    wrappers = wrappers or [
+        {"total_cost_usd": 0.01 * (i + 1), "usage": {"input_tokens": 10}}
+        for i in range(len(payloads))
+    ]
+    pairs = list(zip(payloads, wrappers))
+    it = iter(pairs)
+
+    def _runner(prompt: str) -> dict:
+        payload, wrapper = next(it)
+        return {
+            "payload": payload,
+            "wrapper": wrapper,
+            "stderr": "",
+            "returncode": 0,
+            "duration_s": 1.23,
+            "cmd": ["claude", "--print", "--json-schema", '{"x": 1}'],
+        }
+
+    return _runner
+
+
+def test_score_rubric_writes_sidecars_when_experiment_dir_set(tmp_path):
+    """Each trial's full subprocess output is persisted; result.json gets refs."""
+    rich = _rich_sequence_judge(
+        [
+            {"scores": {"a": 2}, "overall": 2.0, "rationale": "r1"},
+            {"scores": {"a": 3}, "overall": 3.0, "rationale": "r2"},
+            {"scores": {"a": 1}, "overall": 1.0, "rationale": "r3"},
+        ]
+    )
+    result = score_rubric(
+        "r", "d", n_trials=3, judge_runner=rich, experiment_dir=tmp_path
+    )
+
+    for i in (1, 2, 3):
+        sidecar_path = tmp_path / JUDGE_TRIAL_FILENAME_TEMPLATE.format(i=i)
+        assert sidecar_path.exists(), f"missing sidecar for trial {i}"
+        sidecar = json.loads(sidecar_path.read_text())
+        assert sidecar["trial_index"] == i
+        assert "stdout_wrapper" in sidecar
+        assert sidecar["returncode"] == 0
+        assert sidecar["total_cost_usd"] == pytest.approx(0.01 * i)
+
+    # Per-trial records carry judge_io references for result.json.
+    for i, trial in enumerate(result["per_trial"], start=1):
+        assert trial["judge_io"]["path"] == JUDGE_TRIAL_FILENAME_TEMPLATE.format(i=i)
+        assert trial["judge_io"]["total_cost_usd"] == pytest.approx(0.01 * i)
+
+
+def test_score_rubric_no_sidecars_when_experiment_dir_none(tmp_path):
+    """experiment_dir=None preserves the legacy contract (no side-effects)."""
+    rich = _rich_sequence_judge(
+        [{"scores": {"a": 2}, "overall": 2.0, "rationale": "r"} for _ in range(3)]
+    )
+    result = score_rubric("r", "d", n_trials=3, judge_runner=rich, experiment_dir=None)
+    assert list(tmp_path.iterdir()) == []
+    assert "judge_io" not in result["per_trial"][0]
+
+
+def test_score_rubric_bare_payload_runner_with_experiment_dir_writes_no_sidecars(tmp_path):
+    """Bare-payload fakes (legacy contract) must NOT trigger sidecar writes
+    even when experiment_dir is set; they have no rich data to persist."""
+    bare = _constant_judge({"a": 2}, overall=2.0)
+    result = score_rubric(
+        "r", "d", n_trials=3, judge_runner=bare, experiment_dir=tmp_path
+    )
+    assert list(tmp_path.iterdir()) == []
+    assert "judge_io" not in result["per_trial"][0]
+
+
+def test_sidecar_redacts_json_schema_body():
+    """The --json-schema argument body is replaced with a SHA pointer to
+    keep sidecars compact (the schema is a constant; we know it from source)."""
+    from harness.score_rubric import _redact_schema_in_cmd
+
+    cmd = [
+        "claude", "--print", "--json-schema",
+        '{"long": "schema body that goes on and on..."}',
+        "-p", "a prompt",
+    ]
+    out = _redact_schema_in_cmd(cmd)
+    schema_idx = out.index("--json-schema")
+    assert out[schema_idx + 1].startswith("<sha256:")
+    # Other args untouched
+    assert out[-2:] == ["-p", "a prompt"]
+
+
+def test_subprocess_judge_runner_returns_rich_record(monkeypatch):
+    """The real adapter must return the rich JudgeTrial shape (T1.7a)."""
+    from harness import score_rubric as sr
+
+    class _FakeProc:
+        returncode = 0
+        stdout = (
+            '{"result": "{\\"scores\\": {\\"a\\": 1}, '
+            '\\"overall\\": 1.0, \\"rationale\\": \\"r\\"}", '
+            '"total_cost_usd": 0.0123, "usage": {"input_tokens": 5}}'
+        )
+        stderr = "some stderr noise"
+
+    monkeypatch.setattr(sr.subprocess, "run", lambda *a, **k: _FakeProc())
+    ret = subprocess_judge_runner("any prompt")
+    assert "payload" in ret
+    assert ret["payload"]["scores"] == {"a": 1}
+    assert ret["wrapper"]["total_cost_usd"] == 0.0123
+    assert ret["stderr"] == "some stderr noise"
+    assert ret["returncode"] == 0
+    assert isinstance(ret["duration_s"], float)
+    assert ret["cmd"][0] == "claude"
