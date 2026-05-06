@@ -24,6 +24,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 # Allow invocation as `python3 harness/render_report.py` (script mode), not
 # just `python3 -m harness.render_report`. Mirrors run_experiment.py.
 if __package__ in (None, ""):
@@ -33,6 +35,7 @@ from harness.validate_result import ResultValidationError, validate_result  # no
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXPERIMENTS_DIR = REPO_ROOT / "experiments"
+TASKS_DIR = REPO_ROOT / "tasks" / "instances"
 
 REPORT_FILENAME = "report.md"
 BEGIN_MARKER = (
@@ -230,6 +233,101 @@ def render_identity(result: dict) -> str:
             sources,
         ]
     )
+
+
+def render_task_definition(result: dict, tasks_dir: Path) -> str:
+    """Show the prompt the agent saw, plus scope/tools/verification metadata.
+
+    The `problem_statement` is the dominant cause of agent output, so it
+    must be visible alongside the deliverable when reviewers calibrate the
+    rubric. If `tasks/instances/<task_id>/task.yaml` is missing, emit a `>`
+    warning and continue — the rest of the report should still render.
+    """
+    header = "## Task definition"
+    task_id = result.get("task_id")
+    if not task_id:
+        return f"{header}\n\n> _`task_id` missing from result.json._"
+
+    task_path = tasks_dir / task_id / "task.yaml"
+    if not task_path.exists():
+        return (
+            f"{header}\n\n"
+            f"> _Task definition not found at "
+            f"`tasks/instances/{task_id}/task.yaml`._"
+        )
+
+    try:
+        with task_path.open() as f:
+            task = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        return f"{header}\n\n> _Failed to parse `{task_path.name}`: {e}._"
+
+    problem = (task.get("problem_statement") or "").rstrip()
+    scope_files = task.get("scope_files") or []
+    available_tools = task.get("available_tools") or []
+    verification_method = task.get("verification_method") or "—"
+
+    lines = [header, "", "**Problem statement (verbatim from task.yaml):**", ""]
+    if problem:
+        lines.append(_fenced(problem + "\n", "txt"))
+    else:
+        lines.append("> _`problem_statement` missing or empty._")
+    lines.extend(
+        [
+            "",
+            "**Scope and tooling**",
+            "",
+            "- **scope_files:** "
+            + (", ".join(f"`{p}`" for p in scope_files) if scope_files else "_(none)_"),
+            "- **available_tools:** "
+            + (
+                ", ".join(f"`{t}`" for t in available_tools)
+                if available_tools
+                else "_(none)_"
+            ),
+            f"- **verification_method:** `{verification_method}`",
+        ]
+    )
+    return "\n".join(lines)
+
+
+_INSTRUMENT_WARNING = (
+    "> ⚠ **Measurement-instrument warning:** this rubric grades as saturated "
+    "on this run — every dimension's mean is 3.0 with zero pooled stdev. A "
+    "perfect mean with zero variance means the instrument cannot detect "
+    "plugin improvement (only degradation). Treat the score as a non-result; "
+    "consult the calibration log in `analysis/baseline-v0.1.0.md`."
+)
+
+_INSTRUMENT_HEALTHY = (
+    "Instrument health: at least one dimension shows non-zero variance or "
+    "below-ceiling mean — comparison with v0.1.0 baseline is meaningful."
+)
+
+
+def render_instrument_health(scoring: dict) -> str:
+    """Auto-flag the saturated-rubric case so weak baselines are visible.
+
+    Returns the empty string when no rubric data is present (e.g.,
+    `status: "no-deliverable"` skips the judge); the section is then absent
+    from the report rather than emitting a misleading "healthy" claim.
+    """
+    rs = scoring.get("rubric_scores") or {}
+    mean = rs.get("mean") or {}
+    stdev = rs.get("stdev") or {}
+    if not mean or not stdev:
+        return ""
+
+    saturated = all(
+        isinstance(mean.get(d), (int, float))
+        and isinstance(stdev.get(d), (int, float))
+        and abs(mean[d] - 3.0) < 1e-9
+        and abs(stdev[d]) < 1e-9
+        for d in mean
+    )
+
+    body = _INSTRUMENT_WARNING if saturated else _INSTRUMENT_HEALTHY
+    return f"## Measurement instrument health\n\n{body}"
 
 
 def render_transcript(transcript_md: str | None, transcript_path: Path) -> str:
@@ -434,8 +532,14 @@ def render_rationales(scoring: dict) -> str:
 # Auto-block + report assembly
 # ---------------------------------------------------------------------------
 
-def render_auto_block(experiment_dir: Path) -> str:
-    """Build the deterministic auto-rendered span (between BEGIN/END markers)."""
+def render_auto_block(
+    experiment_dir: Path, *, tasks_dir: Path = TASKS_DIR
+) -> str:
+    """Build the deterministic auto-rendered span (between BEGIN/END markers).
+
+    `tasks_dir` is overridable so tests can inject a fake `task.yaml`
+    location (e.g., to verify the missing-file path).
+    """
     result_path = experiment_dir / "result.json"
     transcript_path = experiment_dir / "transcript.md"
     diff_path = experiment_dir / "diff.patch"
@@ -456,13 +560,17 @@ def render_auto_block(experiment_dir: Path) -> str:
     )
     diff_text = diff_path.read_text() if diff_path.exists() else None
 
+    scoring = result.get("scoring", {})
     sections = [
         render_identity(result),
+        render_task_definition(result, tasks_dir),
         render_transcript(transcript_md, transcript_path),
         render_deliverable(diff_text, diff_path, result),
-        render_rubric(result.get("scoring", {})),
-        render_rationales(result.get("scoring", {})),
+        render_rubric(scoring),
+        render_instrument_health(scoring),
+        render_rationales(scoring),
     ]
+    sections = [s for s in sections if s]
     return "\n\n".join(sections).rstrip() + "\n"
 
 
@@ -506,9 +614,14 @@ def _new_report(auto_block: str, experiment_id: str) -> str:
     )
 
 
-def render_report(experiment_dir: Path, *, force: bool = False) -> str:
+def render_report(
+    experiment_dir: Path,
+    *,
+    force: bool = False,
+    tasks_dir: Path = TASKS_DIR,
+) -> str:
     """High-level: produce the full report text for an experiment dir."""
-    auto = render_auto_block(experiment_dir)
+    auto = render_auto_block(experiment_dir, tasks_dir=tasks_dir)
     experiment_id = experiment_dir.name
     report_path = experiment_dir / REPORT_FILENAME
     existing = report_path.read_text() if report_path.exists() else None

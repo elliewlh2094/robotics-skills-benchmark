@@ -24,6 +24,8 @@ from harness.render_report import (
     parse_diff,
     render_auto_block,
     render_report,
+    render_instrument_health,
+    render_task_definition,
 )
 from harness.validate_result import ResultValidationError
 
@@ -382,6 +384,161 @@ def test_render_rationales_section_includes_all_trials(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# T1.6a: task-definition section
+# ---------------------------------------------------------------------------
+
+def _seed_fake_task_yaml(tasks_dir: Path, task_id: str, body: str) -> None:
+    """Write a fake task.yaml under tasks_dir so the renderer can find it."""
+    task_dir = tasks_dir / task_id
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.yaml").write_text(body)
+
+
+def test_task_definition_renders_all_fields(tmp_path):
+    tasks_dir = tmp_path / "tasks_root"
+    _seed_fake_task_yaml(
+        tasks_dir,
+        "diffbot-experiment-design",
+        textwrap.dedent("""\
+            task_id: diffbot-experiment-design
+            problem_statement: |
+              Hypothetical objective.
+              Multi-line statement.
+            scope_files:
+              - "EXPERIMENT.md"
+            available_tools:
+              - Read
+              - Write
+            verification_method: rubric
+        """),
+    )
+    exp_dir = _make_experiment(tmp_path)
+    text = render_report(exp_dir, tasks_dir=tasks_dir)
+    assert "## Task definition" in text
+    assert "Hypothetical objective." in text
+    assert "Multi-line statement." in text
+    assert "**scope_files:** `EXPERIMENT.md`" in text
+    assert "**available_tools:** `Read`, `Write`" in text
+    assert "**verification_method:** `rubric`" in text
+
+
+def test_task_definition_missing_emits_warning(tmp_path):
+    """If task.yaml is absent, the section emits a `>` warning, not a crash."""
+    tasks_dir = tmp_path / "empty_tasks_root"
+    tasks_dir.mkdir()
+    exp_dir = _make_experiment(tmp_path)
+    text = render_report(exp_dir, tasks_dir=tasks_dir)
+    assert "## Task definition" in text
+    assert "Task definition not found at" in text
+    # Other sections still rendered.
+    assert "## Run identity" in text
+    assert "## Restored deliverable" in text
+
+
+def test_task_definition_yaml_parse_error(tmp_path):
+    tasks_dir = tmp_path / "tasks_root"
+    _seed_fake_task_yaml(
+        tasks_dir,
+        "diffbot-experiment-design",
+        ":\n  invalid: yaml: : :\n",  # malformed
+    )
+    exp_dir = _make_experiment(tmp_path)
+    text = render_report(exp_dir, tasks_dir=tasks_dir)
+    assert "Failed to parse" in text
+
+
+# ---------------------------------------------------------------------------
+# T1.6a: measurement-instrument-health section
+# ---------------------------------------------------------------------------
+
+def _saturated_scoring(dims: list[str], n_trials: int = 3) -> dict:
+    """Build a `scoring` dict where every dimension is 3.0 with zero stdev."""
+    return {
+        "scope_check": {
+            "out_of_scope_file_count": 0,
+            "out_of_scope_paths": [],
+        },
+        "rubric_scores": {
+            "n_trials": n_trials,
+            "per_trial": [
+                {
+                    "scores": {d: 3 for d in dims},
+                    "overall_recomputed": 3.0,
+                    "overall_judge_reported": 3.0,
+                    "rationale": f"trial {i}: looks great",
+                }
+                for i in range(1, n_trials + 1)
+            ],
+            "mean": {d: 3.0 for d in dims},
+            "stdev": {d: 0.0 for d in dims},
+            "overall_mean": 3.0,
+            "overall_stdev": 0.0,
+        },
+    }
+
+
+def test_instrument_health_warns_on_saturation():
+    scoring = _saturated_scoring(["hypothesis", "signals", "thresholds"])
+    out = render_instrument_health(scoring)
+    assert "## Measurement instrument health" in out
+    assert "Measurement-instrument warning" in out
+    assert "saturated" in out
+
+
+def test_instrument_health_healthy_when_below_ceiling():
+    """Default fixture has hypothesis mean=2.0; expect the 'meaningful' line."""
+    scoring = {
+        "rubric_scores": {
+            "mean": {"hypothesis": 2.0, "signals": 3.0},
+            "stdev": {"hypothesis": 0.0, "signals": 0.0},
+        }
+    }
+    out = render_instrument_health(scoring)
+    assert "Measurement instrument health" in out
+    assert "meaningful" in out
+    assert "warning" not in out.lower()
+
+
+def test_instrument_health_silent_when_no_rubric_data():
+    """No rubric_scores → return empty string (section absent from report)."""
+    assert render_instrument_health({}) == ""
+    assert render_instrument_health({"rubric_scores": {}}) == ""
+
+
+def test_instrument_health_warning_appears_when_fixture_overridden_to_saturate(tmp_path):
+    exp_dir = _make_experiment(
+        tmp_path,
+        result_overrides={
+            "scoring": _saturated_scoring(["hypothesis", "signals"]),
+        },
+    )
+    text = render_report(exp_dir)
+    assert "Measurement-instrument warning" in text
+
+
+def test_instrument_health_section_absent_in_no_deliverable_report(tmp_path):
+    """no-deliverable runs skip the judge → no rubric_scores → section absent."""
+    exp_dir = _make_experiment(
+        tmp_path,
+        deliverable_content="",
+        result_overrides={
+            "status": "no-deliverable",
+            "files_modified": [],
+            "judge_calls": 0,
+            "scoring": {
+                "scope_check": {
+                    "out_of_scope_file_count": 0,
+                    "out_of_scope_paths": [],
+                },
+            },
+        },
+        diff_text="",
+    )
+    text = render_report(exp_dir)
+    assert "## Measurement instrument health" not in text
+
+
+# ---------------------------------------------------------------------------
 # Marker preservation
 # ---------------------------------------------------------------------------
 
@@ -465,11 +622,20 @@ BASELINE_DIRS = sorted(
     "exp_dir", BASELINE_DIRS, ids=[d.name for d in BASELINE_DIRS]
 )
 def test_real_baseline_renders_without_error(exp_dir):
-    """Sanity: each on-disk baseline renders cleanly and contains expected anchors."""
+    """Sanity: each on-disk baseline renders cleanly and contains expected anchors.
+
+    The three v0.1.0 baselines are saturated, so the instrument-health
+    warning is expected to fire here. (Per the calibration-gate plan, the
+    on-disk reports themselves are frozen as historical artifacts; this
+    test only exercises the renderer in-memory.)
+    """
     text = render_auto_block(exp_dir)
     assert "## Run identity" in text
+    assert "## Task definition" in text
     assert "## Agent transcript" in text
     assert "## Restored deliverable" in text
     assert "## Rubric scores" in text
+    assert "## Measurement instrument health" in text
+    assert "Measurement-instrument warning" in text
     assert "## Judge rationales" in text
     assert "EXPERIMENT.md" in text

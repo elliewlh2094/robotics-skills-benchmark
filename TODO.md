@@ -9,30 +9,43 @@ Lightweight operational pointer. Ephemeral on purpose — the durable references
 - [`docs/candidate-repos.md`](docs/candidate-repos.md) — investigated task-repo candidates
 - [`docs/result-json-reference.md`](docs/result-json-reference.md) + [`harness/schemas/result.schema.yaml`](harness/schemas/result.schema.yaml) — canonical pair for `result.json` field shapes (validated on every write)
 
-> **Last updated:** 2026-05-05 (T1.5 complete; T1.6 added + reports rendered; **Phase 2 calibration gate still in effect** — pending user review of reports + T1.7).
+> **Last updated:** 2026-05-06 (T1.6a renderer extension landed; new plan adds T1.7b structural overhaul + Checkpoint A-2 — see `~/.claude/plans/i-have-read-through-swirling-bonbon.md`).
 
 ---
 
 ## ▶ Where to resume
 
-**Manual review of three baseline reports (pre-T1.7b).** T1.6 landed: `harness/render_report.py` produced human-readable Markdown reports for all three v0.1.0 baseline runs. Each `experiments/2026-05-04_v0.1.0_diffbot-experiment-design_baseline-{1,2,3}/report.md` contains run identity, agent transcript, restored `EXPERIMENT.md`, rubric score table, judge rationales, and a `## Manual review` workspace that is preserved across re-renders. **The Phase 2 calibration gate cannot be cleared until the review notes inform a calibration direction.**
+**T1.7b: rubric + scorer + schema overhaul (atomic).** Per the approved plan (`~/.claude/plans/i-have-read-through-swirling-bonbon.md`), the manual-review pass on the three v0.1.0 baselines surfaced findings that supersede the original "pick-an-anchor-and-tighten" T1.7b. The new T1.7b couples rubric content + judge schema + result schema + renderer rationale rendering as one breaking change (with a `schema_version` bump per ADR-0008), verified by re-grading the existing 3 deliverables before any fresh agent runs.
 
 Steps to resume:
-1. **Read the three `report.md` files** under `experiments/2026-05-04_v0.1.0_diffbot-experiment-design_baseline-{1,2,3}/`. Fill in the `## Manual review` section in each (free-form; survives re-renders).
-2. **(In parallel) Implement T1.7a** — judge-transcript persistence in `harness/score_rubric.py` + optional `judge_io` field in `harness/schemas/result.schema.yaml`. Independent of step 1; lands the plumbing before the next baseline cycle so we capture full evidence going forward.
-3. **Decide T1.7b calibration direction** from `analysis/baseline-v0.1.0.md` §"Calibration directions to consider" (anchor-tightening, new dimensions, adversarial judge prompt, cross-model judging, blind comparison). The manual-review notes ground this decision.
-4. **Apply rubric changes** (likely in `tasks/instances/diffbot-experiment-design/rubric.md`).
-5. **Re-run baseline as `baseline-c1-{1,2,3}`** using the T1.7a-equipped runner so each trial gets a `judge-trial-*.json` sidecar. Plugin tag stays `v0.1.0` (rubric edits are not plugin changes).
-6. **Re-evaluate the gate.** Proceed to T2.1 only when at least one dimension shows `mean < 3.0` OR `stdev > 0`. If still saturated, repeat with `c2` (bounded at three calibration revisions before escalating).
-7. **Log the verdict** in a new `## Calibration log` section of `analysis/baseline-v0.1.0.md`.
+1. **Rubric content** (`tasks/instances/diffbot-experiment-design/rubric.md`): preamble defining the experiment-design skill's core capability; tighten score-3 anchors; add explicit penalty triggers per dimension (`recorded_signals` configuration-relative, `success_thresholds` consistency vs timing precision, `repo_grounding` semantic-not-citation); add new dimensions `execution_procedure` and `design_completeness` (12-element checklist evaluated for specificity / internal consistency / sufficiency-for-execution). Total: 9 dimensions. Publish the canonical dimension key list as a single source of truth consumed by validator + scorer.
+2. **Judge output schema** (`harness/score_rubric.py`): per-dimension structured rationale `{score, rationale: {positive_evidence, penalty_evidence, uncertainty, score_cap_reason}}`; top-level `overall_judge_reported`. Update `_JUDGE_INSTRUCTIONS` and `JUDGE_OUTPUT_SCHEMA` accordingly.
+3. **Result schema** (`harness/schemas/result.schema.yaml`): migrate per-trial entry to the new shape; bump `schema_version` 1 → 2. Strict v2 parser validation: `dimensions` map must contain exactly the rubric's expected key set (missing/extra/misspelled keys raise `ResultValidationError` *before* aggregation).
+4. **Documentation** (`docs/result-json-reference.md`): preserve v1 summary alongside v2 — do not overwrite. Tools dispatch on `schema_version`.
+5. **Renderer** (`harness/render_report.py`): add v1 vs v2 dispatch in `render_rationales()`. v1 path keeps existing free-form rendering for the frozen 3 baselines; v2 path emits per-dimension blocks.
+6. **Regrade utility** (`harness/regrade.py`, new): take an existing experiment dir, restore deliverable from `diff.patch`, run new rubric/judge against it, write fresh result (v2) + sidecars to `experiments/<original-id>__regrade-c1/`.
+7. **Run regrade on the 3 historical baselines.** Verify all four T1.7b pass criteria (definition of "triggered penalty": concrete defect in `penalty_evidence` AND reflected in score or `score_cap_reason`):
+   - ≥2/3 deliverables have a triggered penalty;
+   - ≥2 distinct defect types detected;
+   - every triggered `penalty_evidence` traces to specific deliverable content;
+   - manual review finds no obvious false/missed penalties.
+8. **Log to `analysis/baseline-v0.1.0.md` `## Regrade log`** with each criterion checked off explicitly.
+
+Then T1.7c (fresh `baseline-c1-{1,2,3}` agent runs against the original task with new rubric — two-tier pass criteria), then T1.8 (task-suitability analysis under `analysis/`), then Checkpoint A-2 unblocks Phase 2.
+
+**Frozen-reports policy:** the three `report.md` files under `experiments/2026-05-04_v0.1.0_diffbot-experiment-design_baseline-{1,2,3}/` are historical artifacts and **must not be re-rendered** with the T1.6a additions. The new sections (Task definition, Measurement instrument health) apply only to runs from baseline-c1 onward; existing reports stay as-is so the v0.1.0 evidence chain is preserved. The renderer code is uniform across versions; this is a process policy, not enforced in code. (The `--all` CLI flag would re-render historical reports — don't use it on the experiments dir during T1.7 work.)
 
 Phase 1 task closure status:
 - T1.1, T1.2, T1.3, T1.4, T1.4a: ✓ complete
-- T1.5: ✓ complete (per acceptance criteria — the analysis doc is the deliverable; it correctly documents that the noise floor is degenerate)
-- T1.6: ✓ complete (renderer + tests + three rendered reports; pending user review of `## Manual review`)
-- T1.7a: ⏳ in flight (judge-transcript persistence plumbing)
-- T1.7b: ⏳ blocked on T1.6 review + T1.7a plumbing
-- Checkpoint A: 🟡 partial — three runs landed and variance documented, but the "pause and review" guard fired. Cannot mark Checkpoint A passed until calibration changes the picture.
+- T1.5: ✓ complete
+- T1.6: ✓ complete
+- T1.6a (renderer extension: task-definition + instrument-health sections): ✓ complete
+- T1.7a (judge-transcript persistence plumbing): ✓ complete (commit 91d9e70)
+- T1.7b (rubric + scorer + schema overhaul, expanded scope): ⏳ next
+- T1.7c (fresh baseline-c1 with new rubric): ⏳ blocked on T1.7b
+- T1.8 (task-suitability analysis under `analysis/`): ⏳ can run in parallel with T1.7c
+- T1.9 / T1.10 (new medium-constraint task + baseline): deferred until after T1.7c re-grade results
+- Checkpoint A: 🟡 partial. Checkpoint A-2 (instrument-fitness gate) added; both must pass before Phase 2 / T2.1.
 
 ---
 
@@ -40,8 +53,8 @@ Phase 1 task closure status:
 
 | Phase | Status | Tasks done | Tasks pending |
 |---|---|---|---|
-| Phase 1 (Foundation) | 🟢 tasks done; Checkpoint A pending calibration | T1.1, T1.2, T1.3, T1.4, T1.4a, T1.5, T1.6 | T1.7a (judge-transcript persistence), T1.7b (rubric calibration → `baseline-c1-*`) |
-| Phase 2 (First plugin iteration) | 🛑 paused by Phase 2 calibration gate | — | T2.1–T2.4 (paused) |
+| Phase 1 (Foundation) | 🟢 most tasks done; Checkpoints A + A-2 pending calibration | T1.1, T1.2, T1.3, T1.4, T1.4a, T1.5, T1.6, T1.6a, T1.7a | T1.7b (rubric/scorer/schema overhaul), T1.7c (`baseline-c1-*`), T1.8 (task-suitability analysis), Checkpoint A-2; T1.9/T1.10 deferred |
+| Phase 2 (First plugin iteration) | 🛑 paused by Checkpoints A + A-2 | — | T2.1–T2.4 (paused) |
 | Phase 3 (TDD + debugging) | ⏳ post-V1 | — | T3.1–T3.5 |
 | Phase 4 (Spec + planning) | ⏳ post-V1 | — | T4.1–T4.4 |
 
@@ -70,5 +83,5 @@ All architectural decisions are recorded in [`docs/decisions/`](docs/decisions/)
 2. **No automated cleanup of stale worktrees** under `/tmp/exp-scratch/`. Worktrees from failed runs persist by design (ADR-0002), but no periodic prune is scheduled. Add a `harness/prune.py` once we have >10 stale entries.
 3. **Judge-drift detection** requires human spot-check 1-in-5 (ADR-0003), but no tooling exists yet to surface "which results need human review." Schedule for Phase 5 cadence work, not blocking V1.
 4. **Open questions Q1–Q4** in [`docs/v1-plan.md`](docs/v1-plan.md) §"Open questions" — resolved during execution rather than upfront.
-5. **Judge token/cost not captured.** `result.json` records `judge_calls` (count) but not the per-trial token usage or `cost_usd` that `claude --json-schema` returns. ~~Phase 5 instrumentation work~~ → tracked under T1.7a; sidecar persistence lands before the next baseline cycle.
-6. **Rubric ceiling concern (calibration gate for Phase 2).** All three formal v0.1.0 baseline runs produced `overall_mean: 3.0`, `overall_stdev: 0.0` across all 7 dimensions on 9 trials. ~~Phase 2 paused~~ → tracked under T1.7b; the path to clearing the gate is described in the "Where to resume" section above and the saved feedback memory `feedback_phase2_rubric_calibration_gate.md`.
+5. **Judge token/cost not captured.** ~~Phase 5 instrumentation work~~ → ✓ resolved by T1.7a (commit 91d9e70). Sidecar `judge-trial-{i}.json` files capture per-trial cost / usage / stdout-wrapper / stderr; `result.json` records a `judge_io = {path, total_cost_usd}` reference per trial.
+6. **Rubric ceiling concern (calibration gate for Phase 2).** All three formal v0.1.0 baseline runs produced `overall_mean: 3.0`, `overall_stdev: 0.0` across all 7 dimensions on 9 trials. ~~Phase 2 paused~~ → tracked under T1.7b (now expanded — see "Where to resume"). Canonical research record will live in `analysis/baseline-v0.1.0.md` `## Regrade log` and `## Calibration log` sections; the saved memory file `feedback_phase2_rubric_calibration_gate.md` is an optional sync aid only and is **not** part of Checkpoint A-2 acceptance criteria (which depend solely on version-controlled repo files).
